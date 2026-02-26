@@ -22,21 +22,23 @@ type ConsolidationProcessor struct {
 
 // ConsolidationJobConfig holds configuration for consolidation processing.
 type ConsolidationJobConfig struct {
-	SimilarityThreshold    float64
-	MinGroupSize           int
-	BatchSize              int
-	MaxMergeSize           int
-	RespectAgentBoundaries bool
+	SimilarityThreshold         float64
+	MinGroupSize                int
+	BatchSize                   int
+	MaxMergeSize                int
+	RespectAgentBoundaries      bool
+	RespectVisibilityBoundaries bool
 }
 
 // DefaultConsolidationJobConfig returns default consolidation configuration.
 func DefaultConsolidationJobConfig() ConsolidationJobConfig {
 	return ConsolidationJobConfig{
-		SimilarityThreshold:    0.85,
-		MinGroupSize:           2,
-		BatchSize:              500,
-		MaxMergeSize:           5,
-		RespectAgentBoundaries: false,
+		SimilarityThreshold:         0.85,
+		MinGroupSize:                2,
+		BatchSize:                   500,
+		MaxMergeSize:                5,
+		RespectAgentBoundaries:      true,
+		RespectVisibilityBoundaries: true,
 	}
 }
 
@@ -160,10 +162,29 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 		if len(similar) >= p.config.MinGroupSize {
 			group := make([]*storage.Memory, 0, len(similar))
 			for _, s := range similar {
-				if s.Memory.State == storage.StateStale && !processed[s.Memory.ID] {
-					group = append(group, s.Memory)
-					processed[s.Memory.ID] = true
+				if s.Memory.State != storage.StateStale || processed[s.Memory.ID] {
+					continue
 				}
+
+				// Enforce agent boundaries: only consolidate memories from the same agent
+				if p.config.RespectAgentBoundaries && s.Memory.AgentID != mem.AgentID {
+					continue
+				}
+
+				// Enforce visibility boundaries: don't cross-contaminate visibility levels
+				if p.config.RespectVisibilityBoundaries {
+					// Private: only consolidate with same agent's private memories
+					if mem.Visibility == storage.VisibilityPrivate && s.Memory.AgentID != mem.AgentID {
+						continue
+					}
+					// Team: only consolidate with same team's team-visible memories
+					if mem.Visibility == storage.VisibilityTeam && s.Memory.TeamID != mem.TeamID {
+						continue
+					}
+				}
+
+				group = append(group, s.Memory)
+				processed[s.Memory.ID] = true
 			}
 			if len(group) >= p.config.MinGroupSize {
 				groups = append(groups, group)
@@ -240,6 +261,23 @@ func (p *ConsolidationProcessor) consolidateGroup(ctx context.Context, group []*
 	boostedImportance := avgImportance * (1 + 0.1*float64(len(group)-1))
 	if boostedImportance > 1.0 {
 		boostedImportance = 1.0
+	}
+
+	// Inherit most restrictive visibility from the group
+	// private > team > global (private is most restrictive)
+	mostRestrictive := primary.Visibility
+	for _, mem := range group {
+		if mem.Visibility == storage.VisibilityPrivate {
+			mostRestrictive = storage.VisibilityPrivate
+			break
+		}
+		if mem.Visibility == storage.VisibilityTeam && mostRestrictive == storage.VisibilityGlobal {
+			mostRestrictive = storage.VisibilityTeam
+		}
+	}
+	if mostRestrictive != "" && mostRestrictive != primary.Visibility {
+		vis := string(mostRestrictive)
+		p.store.UpdateMemory(ctx, primary.ID, storage.MemoryUpdate{Visibility: &vis})
 	}
 
 	// Build provenance chain: track all merged memory IDs

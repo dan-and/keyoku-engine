@@ -24,12 +24,14 @@ func NewHandlers(k *keyoku.Keyoku, hub *SSEHub) *Handlers {
 // --- Request/Response types ---
 
 type rememberRequest struct {
-	EntityID  string `json:"entity_id"`
-	Content   string `json:"content"`
-	SessionID string `json:"session_id,omitempty"`
-	AgentID   string `json:"agent_id,omitempty"`
-	Source    string `json:"source,omitempty"`
-	SchemaID string `json:"schema_id,omitempty"`
+	EntityID   string `json:"entity_id"`
+	Content    string `json:"content"`
+	SessionID  string `json:"session_id,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
+	Source     string `json:"source,omitempty"`
+	SchemaID   string `json:"schema_id,omitempty"`
+	TeamID     string `json:"team_id,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
 }
 
 type rememberResponse struct {
@@ -42,11 +44,12 @@ type rememberResponse struct {
 }
 
 type searchRequest struct {
-	EntityID string `json:"entity_id"`
-	Query    string `json:"query"`
-	Limit    int    `json:"limit,omitempty"`
-	Mode     string `json:"mode,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
+	EntityID  string `json:"entity_id"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	TeamAware bool   `json:"team_aware,omitempty"`
 }
 
 type searchResultItem struct {
@@ -59,6 +62,8 @@ type memoryJSON struct {
 	ID                string    `json:"id"`
 	EntityID          string    `json:"entity_id"`
 	AgentID           string    `json:"agent_id,omitempty"`
+	TeamID            string    `json:"team_id,omitempty"`
+	Visibility        string    `json:"visibility,omitempty"`
 	Content           string    `json:"content"`
 	Type              string    `json:"type"`
 	State             string    `json:"state"`
@@ -80,6 +85,7 @@ type heartbeatCheckRequest struct {
 	ImportanceFloor float64 `json:"importance_floor,omitempty"`
 	MaxResults      int     `json:"max_results,omitempty"`
 	AgentID         string  `json:"agent_id,omitempty"`
+	TeamID          string  `json:"team_id,omitempty"`
 }
 
 type heartbeatCheckResponse struct {
@@ -120,6 +126,8 @@ func toMemoryJSON(m *keyoku.Memory) memoryJSON {
 		ID:             m.ID,
 		EntityID:       m.EntityID,
 		AgentID:        m.AgentID,
+		TeamID:         m.TeamID,
+		Visibility:     string(m.Visibility),
 		Content:        m.Content,
 		Type:           string(m.Type),
 		State:          string(m.State),
@@ -194,6 +202,12 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 	if req.SchemaID != "" {
 		opts = append(opts, keyoku.WithSchemaID(req.SchemaID))
 	}
+	if req.TeamID != "" {
+		opts = append(opts, keyoku.WithTeamID(req.TeamID))
+	}
+	if req.Visibility != "" {
+		opts = append(opts, keyoku.WithVisibility(keyoku.MemoryVisibility(req.Visibility)))
+	}
 
 	result, err := h.k.Remember(r.Context(), req.EntityID, req.Content, opts...)
 	if err != nil {
@@ -227,7 +241,9 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	if req.Limit > 0 {
 		opts = append(opts, keyoku.WithLimit(req.Limit))
 	}
-	if req.AgentID != "" {
+	if req.TeamAware && req.AgentID != "" {
+		opts = append(opts, keyoku.WithTeamAwareness(req.AgentID))
+	} else if req.AgentID != "" {
 		opts = append(opts, keyoku.WithSearchAgentID(req.AgentID))
 	}
 
@@ -278,6 +294,9 @@ func (h *Handlers) HandleHeartbeatCheck(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.AgentID != "" {
 		opts = append(opts, keyoku.WithHeartbeatAgentID(req.AgentID))
+	}
+	if req.TeamID != "" {
+		opts = append(opts, keyoku.WithTeamHeartbeat(req.TeamID))
 	}
 
 	result, err := h.k.HeartbeatCheck(r.Context(), req.EntityID, opts...)
@@ -500,4 +519,170 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 		ByType:         byType,
 		ByState:        byState,
 	})
+}
+
+// --- Team Handlers ---
+
+type teamJSON struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	DefaultVisibility string    `json:"default_visibility"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type teamMemberJSON struct {
+	TeamID   string    `json:"team_id"`
+	AgentID  string    `json:"agent_id"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// HandleCreateTeam creates a new team.
+func (h *Handlers) HandleCreateTeam(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := decodeBody(r, &req); err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	team, err := h.k.Teams().Create(r.Context(), req.Name, req.Description)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, teamJSON{
+		ID:                team.ID,
+		Name:              team.Name,
+		Description:       team.Description,
+		DefaultVisibility: string(team.DefaultVisibility),
+		CreatedAt:         team.CreatedAt,
+		UpdatedAt:         team.UpdatedAt,
+	})
+}
+
+// HandleGetTeam retrieves a team by ID.
+func (h *Handlers) HandleGetTeam(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
+	// Strip any trailing path segments (e.g., /members)
+	if idx := strings.Index(id, "/"); idx != -1 {
+		id = id[:idx]
+	}
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "team id is required")
+		return
+	}
+
+	team, err := h.k.Teams().Get(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "team not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, teamJSON{
+		ID:                team.ID,
+		Name:              team.Name,
+		Description:       team.Description,
+		DefaultVisibility: string(team.DefaultVisibility),
+		CreatedAt:         team.CreatedAt,
+		UpdatedAt:         team.UpdatedAt,
+	})
+}
+
+// HandleDeleteTeam deletes a team.
+func (h *Handlers) HandleDeleteTeam(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "team id is required")
+		return
+	}
+
+	if err := h.k.Teams().Delete(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// HandleAddTeamMember adds an agent to a team.
+func (h *Handlers) HandleAddTeamMember(w http.ResponseWriter, r *http.Request) {
+	// Extract team ID from path: /api/v1/teams/{id}/members
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 1 || parts[0] == "" {
+		writeError(w, http.StatusBadRequest, "team id is required")
+		return
+	}
+	teamID := parts[0]
+
+	var req struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := decodeBody(r, &req); err != nil || req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+
+	if err := h.k.Teams().AddMember(r.Context(), teamID, req.AgentID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "added", "team_id": teamID, "agent_id": req.AgentID})
+}
+
+// HandleRemoveTeamMember removes an agent from a team.
+func (h *Handlers) HandleRemoveTeamMember(w http.ResponseWriter, r *http.Request) {
+	// Extract from path: /api/v1/teams/{id}/members/{agent_id}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 3 || parts[0] == "" || parts[2] == "" {
+		writeError(w, http.StatusBadRequest, "team id and agent_id are required in path")
+		return
+	}
+	teamID := parts[0]
+	agentID := parts[2]
+
+	if err := h.k.Teams().RemoveMember(r.Context(), teamID, agentID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// HandleListTeamMembers lists all members of a team.
+func (h *Handlers) HandleListTeamMembers(w http.ResponseWriter, r *http.Request) {
+	// Extract from path: /api/v1/teams/{id}/members
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 1 || parts[0] == "" {
+		writeError(w, http.StatusBadRequest, "team id is required")
+		return
+	}
+	teamID := parts[0]
+
+	members, err := h.k.Teams().Members(r.Context(), teamID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	result := make([]teamMemberJSON, 0, len(members))
+	for _, m := range members {
+		result = append(result, teamMemberJSON{
+			TeamID:   m.TeamID,
+			AgentID:  m.AgentID,
+			Role:     m.Role,
+			JoinedAt: m.JoinedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }

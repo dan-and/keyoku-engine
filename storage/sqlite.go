@@ -275,6 +275,26 @@ func (s *SQLiteStore) migrate() error {
 			FOREIGN KEY (state_id) REFERENCES agent_states(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_state_history_state ON agent_state_history(state_id)`,
+
+		// Team tables
+		`CREATE TABLE IF NOT EXISTS teams (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			default_visibility TEXT NOT NULL DEFAULT 'team',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS team_members (
+			team_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL UNIQUE,
+			role TEXT NOT NULL DEFAULT 'member',
+			joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (team_id, agent_id),
+			FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_id)`,
 	}
 
 	for _, stmt := range stmts {
@@ -287,9 +307,22 @@ func (s *SQLiteStore) migrate() error {
 	alterStmts := []string{
 		`ALTER TABLE memories ADD COLUMN sentiment REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE memories ADD COLUMN derived_from TEXT DEFAULT '[]'`,
+		// Team & visibility columns
+		`ALTER TABLE memories ADD COLUMN team_id TEXT DEFAULT ''`,
+		`ALTER TABLE memories ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'`,
+		`ALTER TABLE entities ADD COLUMN team_id TEXT DEFAULT ''`,
+		`ALTER TABLE relationships ADD COLUMN team_id TEXT DEFAULT ''`,
 	}
 	for _, stmt := range alterStmts {
 		s.db.Exec(stmt) // ignore "duplicate column" errors
+	}
+
+	// Team-related indexes (ignore errors if already exist)
+	teamIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_memories_team_visibility ON memories(team_id, visibility)`,
+	}
+	for _, stmt := range teamIndexes {
+		s.db.Exec(stmt)
 	}
 
 	return nil
@@ -328,18 +361,23 @@ func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
 		expiresAt = &v
 	}
 
+	visibility := string(mem.Visibility)
+	if visibility == "" {
+		visibility = string(VisibilityPrivate)
+	}
+
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (id, entity_id, agent_id, content, content_hash, embedding,
+		`INSERT INTO memories (id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, source, session_id, extraction_provider, extraction_model,
-			importance_factors, confidence_factors, sentiment, derived_from)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		mem.ID, mem.EntityID, mem.AgentID, mem.Content, mem.Hash, mem.Embedding,
+			importance_factors, confidence_factors, sentiment, derived_from, visibility)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mem.ID, mem.EntityID, mem.AgentID, mem.TeamID, mem.Content, mem.Hash, mem.Embedding,
 		string(mem.Type), tags, mem.Importance, mem.Confidence, mem.Stability,
 		mem.AccessCount, lastAccessed, string(mem.State), now, now,
 		expiresAt, mem.Source, mem.SessionID, mem.ExtractionProvider, mem.ExtractionModel,
-		impFactors, confFactors, mem.Sentiment, derivedFrom,
+		impFactors, confFactors, mem.Sentiment, derivedFrom, visibility,
 	)
 	if err != nil {
 		return err
@@ -358,12 +396,12 @@ func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
 
 func (s *SQLiteStore) GetMemory(ctx context.Context, id string) (*Memory, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE id = ?`, id)
 
 	return scanMemory(row)
@@ -380,12 +418,12 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []string) ([]*Me
 		args[i] = id
 	}
 	query := fmt.Sprintf(
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -437,6 +475,10 @@ func (s *SQLiteStore) UpdateMemory(ctx context.Context, id string, updates Memor
 		derivedJSON, _ := json.Marshal(*updates.DerivedFrom)
 		setClauses = append(setClauses, "derived_from = ?")
 		args = append(args, string(derivedJSON))
+	}
+	if updates.Visibility != nil {
+		setClauses = append(setClauses, "visibility = ?")
+		args = append(args, *updates.Visibility)
 	}
 
 	if len(setClauses) == 0 {
@@ -567,6 +609,9 @@ func (s *SQLiteStore) FindSimilarWithOptions(ctx context.Context, embedding []fl
 		if opts.AgentID != "" && m.AgentID != opts.AgentID {
 			continue
 		}
+		if opts.VisibilityFor != nil && !IsVisibleTo(m.Visibility, m.AgentID, m.TeamID, opts.VisibilityFor) {
+			continue
+		}
 		sim := float64(1 - distByID[m.ID])
 		if sim < minScore {
 			continue
@@ -593,6 +638,29 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 	if query.AgentID != "" {
 		where = append(where, "agent_id = ?")
 		args = append(args, query.AgentID)
+	}
+	if query.TeamID != "" {
+		where = append(where, "team_id = ?")
+		args = append(args, query.TeamID)
+	}
+	// Visibility-based access control (private/team/global resolution)
+	if query.VisibilityFor != nil {
+		vc := query.VisibilityFor
+		if vc.TeamID != "" {
+			where = append(where, `((visibility = 'private' AND agent_id = ?) OR (visibility = 'team' AND team_id = ?) OR (visibility = 'global'))`)
+			args = append(args, vc.AgentID, vc.TeamID)
+		} else {
+			where = append(where, `((visibility = 'private' AND agent_id = ?) OR (visibility = 'global'))`)
+			args = append(args, vc.AgentID)
+		}
+	}
+	if len(query.Visibility) > 0 {
+		ph := make([]string, len(query.Visibility))
+		for i, v := range query.Visibility {
+			ph[i] = "?"
+			args = append(args, string(v))
+		}
+		where = append(where, fmt.Sprintf("visibility IN (%s)", strings.Join(ph, ",")))
 	}
 	if len(query.Types) > 0 {
 		ph := make([]string, len(query.Types))
@@ -631,12 +699,12 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 	}
 
 	q := fmt.Sprintf(
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories %s ORDER BY %s %s LIMIT ? OFFSET ?`,
 		whereClause, orderBy, direction)
 
@@ -654,12 +722,12 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 func (s *SQLiteStore) GetRecentMemories(ctx context.Context, entityID string, hours int, limit int) ([]*Memory, error) {
 	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour).UTC().Format(time.RFC3339)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE entity_id = ? AND created_at > ? AND state = 'active'
 		ORDER BY created_at DESC LIMIT ?`, entityID, cutoff, limit)
 	if err != nil {
@@ -673,12 +741,12 @@ func (s *SQLiteStore) GetRecentMemories(ctx context.Context, entityID string, ho
 
 func (s *SQLiteStore) FindByHash(ctx context.Context, entityID, hash string) (*Memory, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE entity_id = ? AND content_hash = ? AND state != 'deleted' LIMIT 1`,
 		entityID, hash)
 	mem, err := scanMemory(row)
@@ -690,12 +758,12 @@ func (s *SQLiteStore) FindByHash(ctx context.Context, entityID, hash string) (*M
 
 func (s *SQLiteStore) FindByHashWithAgent(ctx context.Context, entityID, agentID, hash string) (*Memory, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE entity_id = ? AND agent_id = ? AND content_hash = ? AND state != 'deleted' LIMIT 1`,
 		entityID, agentID, hash)
 	mem, err := scanMemory(row)
@@ -869,12 +937,12 @@ func (s *SQLiteStore) GetAllEntities(ctx context.Context) ([]string, error) {
 
 func (s *SQLiteStore) GetActiveMemoriesForDecay(ctx context.Context, batchSize, offset int) ([]*Memory, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE state IN ('active', 'stale')
 		ORDER BY created_at ASC LIMIT ? OFFSET ?`, batchSize, offset)
 	if err != nil {
@@ -1836,12 +1904,12 @@ func (s *SQLiteStore) DeleteCustomExtractionsBySchema(ctx context.Context, schem
 
 func (s *SQLiteStore) getMemoryUnlocked(ctx context.Context, id string) (*Memory, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+		`SELECT id, entity_id, agent_id, team_id, content, content_hash, embedding,
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
-			sentiment, derived_from
+			sentiment, derived_from, visibility
 		FROM memories WHERE id = ?`, id)
 	return scanMemory(row)
 }
@@ -1855,15 +1923,15 @@ func scanMemory(row scanner) (*Memory, error) {
 	var tagsStr, impFactorsStr, confFactorsStr, derivedFromStr string
 	var lastAccessedStr, createdStr, updatedStr sql.NullString
 	var expiresStr, deletedStr sql.NullString
-	var memType, stateStr string
+	var memType, stateStr, visibilityStr string
 
 	err := row.Scan(
-		&m.ID, &m.EntityID, &m.AgentID, &m.Content, &m.Hash, &m.Embedding,
+		&m.ID, &m.EntityID, &m.AgentID, &m.TeamID, &m.Content, &m.Hash, &m.Embedding,
 		&memType, &tagsStr, &m.Importance, &m.Confidence, &m.Stability,
 		&m.AccessCount, &lastAccessedStr, &stateStr, &createdStr, &updatedStr,
 		&expiresStr, &deletedStr, &m.Version, &m.Source, &m.SessionID,
 		&m.ExtractionProvider, &m.ExtractionModel, &impFactorsStr, &confFactorsStr,
-		&m.Sentiment, &derivedFromStr,
+		&m.Sentiment, &derivedFromStr, &visibilityStr,
 	)
 	if err != nil {
 		return nil, err
@@ -1871,6 +1939,10 @@ func scanMemory(row scanner) (*Memory, error) {
 
 	m.Type = MemoryType(memType)
 	m.State = MemoryState(stateStr)
+	m.Visibility = MemoryVisibility(visibilityStr)
+	if m.Visibility == "" {
+		m.Visibility = VisibilityPrivate
+	}
 
 	m.Tags.Scan(tagsStr)
 	m.ImportanceFactors.Scan(impFactorsStr)
@@ -2132,6 +2204,120 @@ func (s *SQLiteStore) LogAgentStateHistory(ctx context.Context, entry *AgentStat
 		entry.TriggerContent, entry.Confidence, entry.Reasoning, now.Format(time.RFC3339),
 	)
 	return err
+}
+
+// --- Team CRUD ---
+
+func (s *SQLiteStore) CreateTeam(ctx context.Context, team *Team) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if team.ID == "" {
+		team.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC()
+	team.CreatedAt = now
+	team.UpdatedAt = now
+
+	visibility := string(team.DefaultVisibility)
+	if visibility == "" {
+		visibility = string(VisibilityTeam)
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO teams (id, name, description, default_visibility, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		team.ID, team.Name, team.Description, visibility,
+		now.Format(time.RFC3339), now.Format(time.RFC3339),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetTeam(ctx context.Context, id string) (*Team, error) {
+	var t Team
+	var visStr, createdStr, updatedStr string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, description, default_visibility, created_at, updated_at FROM teams WHERE id = ?`, id,
+	).Scan(&t.ID, &t.Name, &t.Description, &visStr, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	t.DefaultVisibility = MemoryVisibility(visStr)
+	t.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	t.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+	return &t, nil
+}
+
+func (s *SQLiteStore) DeleteTeam(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM teams WHERE id = ?", id)
+	return err
+}
+
+func (s *SQLiteStore) AddTeamMember(ctx context.Context, teamID, agentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO team_members (team_id, agent_id, role, joined_at) VALUES (?, ?, 'member', ?)`,
+		teamID, agentID, now,
+	)
+	return err
+}
+
+func (s *SQLiteStore) RemoveTeamMember(ctx context.Context, teamID, agentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM team_members WHERE team_id = ? AND agent_id = ?`,
+		teamID, agentID,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetTeamMembers(ctx context.Context, teamID string) ([]*TeamMember, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT team_id, agent_id, role, joined_at FROM team_members WHERE team_id = ?`, teamID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []*TeamMember
+	for rows.Next() {
+		var m TeamMember
+		var joinedStr string
+		if err := rows.Scan(&m.TeamID, &m.AgentID, &m.Role, &joinedStr); err != nil {
+			return nil, err
+		}
+		m.JoinedAt, _ = time.Parse(time.RFC3339, joinedStr)
+		members = append(members, &m)
+	}
+	return members, nil
+}
+
+func (s *SQLiteStore) GetTeamForAgent(ctx context.Context, agentID string) (string, error) {
+	var teamID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT team_id FROM team_members WHERE agent_id = ?`, agentID,
+	).Scan(&teamID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return teamID, nil
 }
 
 // decodeEmbedding converts bytes from SQLite BLOB to float32 slice.

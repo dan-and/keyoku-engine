@@ -51,6 +51,9 @@ type Config struct {
 	DecayThreshold     float64 // default: 0.3
 	ArchivalDays       int     // default: 30
 	PurgeRetentionDays int     // default: 90
+
+	// Team behavior
+	DefaultVisibility string // "private", "team", or "global" (default: "private"; overridden to "team" when agent has a team)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -84,5 +87,7 @@ func DefaultConfig(dbPath string) Config {
 		DecayThreshold:     0.3,
 		ArchivalDays:       30,
 		PurgeRetentionDays: 90,
+
+		DefaultVisibility: "private",
 	}
 }

@@ -30,8 +30,8 @@ func DefaultEngineConfig() EngineConfig {
 }
 
 // EventEmitter is a callback for emitting events from the engine.
-// Parameters: eventType, entityID, agentID, data.
-type EventEmitter func(eventType string, entityID string, agentID string, data map[string]any)
+// Parameters: eventType, entityID, agentID, teamID, data.
+type EventEmitter func(eventType string, entityID string, agentID string, teamID string, data map[string]any)
 
 // Engine is the main memory processing engine.
 type Engine struct {
@@ -103,9 +103,9 @@ func NewEngine(
 func (e *Engine) SetEmitter(emitter EventEmitter) { e.emitter = emitter }
 
 // emit fires an event if an emitter is set.
-func (e *Engine) emit(eventType string, entityID string, agentID string, data map[string]any) {
+func (e *Engine) emit(eventType string, entityID string, agentID string, teamID string, data map[string]any) {
 	if e.emitter != nil {
-		e.emitter(eventType, entityID, agentID, data)
+		e.emitter(eventType, entityID, agentID, teamID, data)
 	}
 }
 
@@ -123,11 +123,13 @@ func (e *Engine) TokenBudget() *TokenBudget { return e.tokenBudget }
 
 // AddRequest represents a request to add memories.
 type AddRequest struct {
-	Content   string
-	SessionID string
-	AgentID   string
-	Source    string
-	SchemaID string // Optional: custom extraction schema ID
+	Content    string
+	SessionID  string
+	AgentID    string
+	Source     string
+	SchemaID   string // Optional: custom extraction schema ID
+	TeamID     string                   // Team this memory belongs to
+	Visibility storage.MemoryVisibility // Visibility level (defaults based on team membership)
 }
 
 // AddResult represents the result of adding memories.
@@ -200,7 +202,20 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 		return nil, fmt.Errorf("failed to embed query: %w", err)
 	}
 
-	similarMemories, err := e.store.FindSimilar(ctx, queryEmbedding, entityID, 10, 0.5)
+	// Build visibility context for similarity search so dedup/conflict only considers visible memories
+	var visibilityFor *storage.VisibilityContext
+	if req.TeamID != "" || req.AgentID != "" {
+		agentID := req.AgentID
+		if agentID == "" {
+			agentID = "default"
+		}
+		visibilityFor = &storage.VisibilityContext{AgentID: agentID, TeamID: req.TeamID}
+	}
+
+	similarMemories, err := e.store.FindSimilarWithOptions(ctx, queryEmbedding, entityID, 10, 0.5, storage.SimilarityOptions{
+		AgentID:       req.AgentID,
+		VisibilityFor: visibilityFor,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to find similar memories: %w", err)
 	}
@@ -332,7 +347,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		if err != nil {
 			return MemoryDetail{}, fmt.Errorf("merge failed: %w", err)
 		}
-		e.emit("memory.merged", entityID, req.AgentID, map[string]any{
+		e.emit("memory.merged", entityID, req.AgentID, req.TeamID, map[string]any{
 			"memory":           merged,
 			"original_content": dupResult.ExistingMemory.Content,
 			"merged_content":   merged.Content,
@@ -363,7 +378,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 
 	if conflictResult != nil && conflictResult.HasConflict && len(conflictResult.Conflicts) > 0 {
 		conflict := conflictResult.Conflicts[0]
-		e.emit("conflict.detected", entityID, req.AgentID, map[string]any{
+		e.emit("conflict.detected", entityID, req.AgentID, req.TeamID, map[string]any{
 			"new_content":      extracted.Content,
 			"existing_content": conflict.ExistingMemory.Content,
 			"conflict_type":    string(conflict.ConflictType),
@@ -427,12 +442,25 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		agentID = "default"
 	}
 
+	// Resolve team and visibility
+	teamID := req.TeamID
+	visibility := req.Visibility
+	if visibility == "" {
+		if teamID != "" {
+			visibility = storage.VisibilityTeam // share-by-default for team agents
+		} else {
+			visibility = storage.VisibilityPrivate
+		}
+	}
+
 	// Encode embedding as bytes for SQLite backup
 	embeddingBytes := encodeEmbedding(embedding)
 
 	mem := &storage.Memory{
 		EntityID:           entityID,
 		AgentID:            agentID,
+		TeamID:             teamID,
+		Visibility:         visibility,
 		Content:            extracted.Content,
 		Hash:               hash,
 		Embedding:          embeddingBytes,
@@ -457,7 +485,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		return MemoryDetail{}, err
 	}
 
-	e.emit("memory.created", entityID, req.AgentID, map[string]any{
+	e.emit("memory.created", entityID, req.AgentID, req.TeamID, map[string]any{
 		"memory":     mem,
 		"content":    mem.Content,
 		"type":       string(mem.Type),
@@ -515,7 +543,7 @@ func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, sim
 		return MemoryDetail{}, err
 	}
 
-	e.emit("memory.updated", entityID, targetMemory.AgentID, map[string]any{
+	e.emit("memory.updated", entityID, targetMemory.AgentID, targetMemory.TeamID, map[string]any{
 		"memory":      targetMemory,
 		"old_content": targetMemory.Content,
 		"new_content": newContent,
@@ -563,7 +591,7 @@ func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, simila
 		return MemoryDetail{}, err
 	}
 
-	e.emit("memory.deleted", entityID, targetMemory.AgentID, map[string]any{
+	e.emit("memory.deleted", entityID, targetMemory.AgentID, targetMemory.TeamID, map[string]any{
 		"memory":  targetMemory,
 		"content": targetMemory.Content,
 		"reason":  del.Reason,
@@ -587,10 +615,12 @@ func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, simila
 
 // QueryRequest represents a memory query request.
 type QueryRequest struct {
-	Query   string
-	Limit   int
-	Mode    ScorerMode
-	AgentID string
+	Query     string
+	Limit     int
+	Mode      ScorerMode
+	AgentID   string
+	TeamAware bool   // When true, resolve team and apply visibility filtering
+	TeamID    string // Team ID for visibility resolution
 }
 
 // QueryResult represents a single query result.
@@ -621,10 +651,18 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 	}
 
 	var candidates []*storage.SimilarityResult
-	if req.AgentID != "" {
-		candidates, err = e.store.FindSimilarWithOptions(ctx, embedding, entityID, candidateCount, 0.3, storage.SimilarityOptions{
+	opts := storage.SimilarityOptions{
+		AgentID: req.AgentID,
+	}
+	// When team-aware, build visibility context for filtering
+	if req.TeamAware && req.AgentID != "" {
+		opts.VisibilityFor = &storage.VisibilityContext{
 			AgentID: req.AgentID,
-		})
+			TeamID:  req.TeamID,
+		}
+	}
+	if req.AgentID != "" || req.TeamAware {
+		candidates, err = e.store.FindSimilarWithOptions(ctx, embedding, entityID, candidateCount, 0.3, opts)
 	} else {
 		candidates, err = e.store.FindSimilar(ctx, embedding, entityID, candidateCount, 0.3)
 	}
@@ -790,6 +828,7 @@ func (e *Engine) extractAndStoreEntities(ctx context.Context, ownerEntityID stri
 				OwnerEntityID: ownerEntityID,
 				CanonicalName: ext.Name,
 				Type:          ext.Type,
+				TeamID:        mem.TeamID,
 				Aliases:       []string{},
 				Attributes:    map[string]any{},
 			}
@@ -867,6 +906,7 @@ func (e *Engine) detectAndStoreRelationships(ctx context.Context, ownerEntityID 
 			SourceEntityID:   sourceEntity.ID,
 			TargetEntityID:   targetEntity.ID,
 			RelationshipType: rel.RelationshipType,
+			TeamID:           mem.TeamID,
 			Strength:         rel.Confidence,
 			Confidence:       rel.Confidence,
 			IsBidirectional:  rel.IsBidirectional,
@@ -1012,7 +1052,7 @@ func (e *Engine) reEvaluateRelatedImportance(ctx context.Context, entityID strin
 			continue
 		}
 
-		e.emit("importance.changed", entityID, sim.Memory.AgentID, map[string]any{
+		e.emit("importance.changed", entityID, sim.Memory.AgentID, sim.Memory.TeamID, map[string]any{
 			"memory":         sim.Memory,
 			"old_importance": sim.Memory.Importance,
 			"new_importance": newImportance,

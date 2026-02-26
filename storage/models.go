@@ -2,6 +2,67 @@ package storage
 
 import "time"
 
+// MemoryVisibility represents the access level of a memory.
+type MemoryVisibility string
+
+const (
+	VisibilityPrivate MemoryVisibility = "private" // Only the owning agent sees this
+	VisibilityTeam    MemoryVisibility = "team"    // All agents in the same team see this
+	VisibilityGlobal  MemoryVisibility = "global"  // All agents across all teams see this
+)
+
+// IsValid checks if the visibility is valid.
+func (v MemoryVisibility) IsValid() bool {
+	switch v {
+	case VisibilityPrivate, VisibilityTeam, VisibilityGlobal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Team represents a group of agents that share a collective consciousness.
+type Team struct {
+	ID                string           `db:"id"`
+	Name              string           `db:"name"`
+	Description       string           `db:"description"`
+	DefaultVisibility MemoryVisibility `db:"default_visibility"`
+	CreatedAt         time.Time        `db:"created_at"`
+	UpdatedAt         time.Time        `db:"updated_at"`
+}
+
+// TeamMember represents an agent's membership in a team.
+type TeamMember struct {
+	TeamID   string    `db:"team_id"`
+	AgentID  string    `db:"agent_id"`
+	Role     string    `db:"role"`
+	JoinedAt time.Time `db:"joined_at"`
+}
+
+// VisibilityContext provides the information needed to resolve what an agent can see.
+// Used by queries to build the visibility WHERE clause.
+type VisibilityContext struct {
+	AgentID string // The querying agent
+	TeamID  string // Pre-resolved team_id for the agent (empty if no team)
+}
+
+// IsVisibleTo checks if a memory is visible to an agent given a visibility context.
+func IsVisibleTo(visibility MemoryVisibility, memAgentID, memTeamID string, vc *VisibilityContext) bool {
+	if vc == nil {
+		return true // No visibility filtering
+	}
+	switch visibility {
+	case VisibilityGlobal:
+		return true
+	case VisibilityTeam:
+		return vc.TeamID != "" && memTeamID == vc.TeamID
+	case VisibilityPrivate:
+		return memAgentID == vc.AgentID
+	default:
+		return memAgentID == vc.AgentID // safe default
+	}
+}
+
 // MemoryState represents the lifecycle state of a memory.
 type MemoryState string
 
@@ -66,9 +127,12 @@ type Memory struct {
 	ID        string     `db:"id"`
 	EntityID  string     `db:"entity_id"`
 	AgentID   string     `db:"agent_id"`
+	TeamID    string     `db:"team_id"`
 	Content   string     `db:"content"`
 	Hash      string     `db:"content_hash"`
 	Embedding []byte     `db:"embedding"` // BLOB backup for HNSW recovery
+
+	Visibility MemoryVisibility `db:"visibility"`
 
 	Type       MemoryType  `db:"memory_type"`
 	Tags       StringSlice `db:"tags"`
@@ -125,6 +189,9 @@ type SessionMessage struct {
 type MemoryQuery struct {
 	EntityID   string
 	AgentID    string
+	TeamID     string             // Filter to specific team
+	Visibility []MemoryVisibility // Filter by specific visibility levels
+	VisibilityFor *VisibilityContext // Build visibility clause for an agent (private+team+global resolution)
 	Types      []MemoryType
 	Tags       []string
 	States     []MemoryState
@@ -145,6 +212,7 @@ type MemoryUpdate struct {
 	State       *MemoryState
 	ExpiresAt   *time.Time
 	DerivedFrom *StringSlice
+	Visibility  *string
 }
 
 // SimilarityResult wraps a memory with its similarity score.
@@ -155,7 +223,8 @@ type SimilarityResult struct {
 
 // SimilarityOptions defines optional filters for similarity search.
 type SimilarityOptions struct {
-	AgentID string
+	AgentID       string
+	VisibilityFor *VisibilityContext // Apply visibility filtering
 }
 
 // StateTransition represents a memory state change for batch processing.
@@ -183,6 +252,7 @@ type Entity struct {
 	ID              string      `db:"id"`
 	OwnerEntityID   string      `db:"owner_entity_id"`
 	AgentID         string      `db:"agent_id"`
+	TeamID          string      `db:"team_id"`
 	CanonicalName   string      `db:"canonical_name"`
 	Type            EntityType  `db:"type"`
 	Description     string      `db:"description"`
@@ -211,6 +281,7 @@ type Relationship struct {
 	ID               string     `db:"id"`
 	OwnerEntityID    string     `db:"owner_entity_id"`
 	AgentID          string     `db:"agent_id"`
+	TeamID           string     `db:"team_id"`
 	SourceEntityID   string     `db:"source_entity_id"`
 	TargetEntityID   string     `db:"target_entity_id"`
 	RelationshipType string     `db:"relationship_type"`
@@ -240,6 +311,7 @@ type RelationshipEvidence struct {
 type EntityQuery struct {
 	OwnerEntityID string
 	AgentID       string
+	TeamID        string
 	Types         []EntityType
 	NamePattern   string
 	Limit         int
@@ -250,6 +322,7 @@ type EntityQuery struct {
 type RelationshipQuery struct {
 	OwnerEntityID     string
 	EntityID          string
+	TeamID            string
 	RelationshipTypes []string
 	MinStrength       float64
 	Limit             int

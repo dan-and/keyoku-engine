@@ -86,6 +86,9 @@ type RetrievalRequest struct {
 	// Graph options
 	IncludeRelated  bool
 	RelatedEntities []string
+
+	// Team visibility
+	VisibilityFor *storage.VisibilityContext
 }
 
 // RetrievalResult contains retrieved memories with scores.
@@ -152,7 +155,14 @@ func (r *EnhancedRetriever) Retrieve(ctx context.Context, req RetrievalRequest) 
 	var allMemories []*ScoredMemory
 
 	if len(embedding) > 0 {
-		similar, err := r.store.FindSimilar(ctx, embedding, req.EntityID, searchLimit, r.config.MinSimilarity)
+		var similar []*storage.SimilarityResult
+		if req.VisibilityFor != nil {
+			similar, err = r.store.FindSimilarWithOptions(ctx, embedding, req.EntityID, searchLimit, r.config.MinSimilarity, storage.SimilarityOptions{
+				VisibilityFor: req.VisibilityFor,
+			})
+		} else {
+			similar, err = r.store.FindSimilar(ctx, embedding, req.EntityID, searchLimit, r.config.MinSimilarity)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +178,14 @@ func (r *EnhancedRetriever) Retrieve(ctx context.Context, req RetrievalRequest) 
 	// Include related entity memories if requested
 	if req.IncludeRelated && len(req.RelatedEntities) > 0 && len(embedding) > 0 {
 		for _, relatedID := range req.RelatedEntities {
-			similar, err := r.store.FindSimilar(ctx, embedding, relatedID, searchLimit/2, r.config.MinSimilarity)
+			var similar []*storage.SimilarityResult
+			if req.VisibilityFor != nil {
+				similar, err = r.store.FindSimilarWithOptions(ctx, embedding, relatedID, searchLimit/2, r.config.MinSimilarity, storage.SimilarityOptions{
+					VisibilityFor: req.VisibilityFor,
+				})
+			} else {
+				similar, err = r.store.FindSimilar(ctx, embedding, relatedID, searchLimit/2, r.config.MinSimilarity)
+			}
 			if err != nil {
 				continue
 			}

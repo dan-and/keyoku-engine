@@ -83,6 +83,14 @@ func main() {
 	mux.HandleFunc("POST /api/v1/watcher/watch", handlers.HandleWatcherWatch)
 	mux.HandleFunc("POST /api/v1/watcher/unwatch", handlers.HandleWatcherUnwatch)
 
+	// Teams
+	mux.HandleFunc("POST /api/v1/teams", handlers.HandleCreateTeam)
+	mux.HandleFunc("GET /api/v1/teams/", handlers.HandleGetTeam)
+	mux.HandleFunc("DELETE /api/v1/teams/", handlers.HandleDeleteTeam)
+	mux.HandleFunc("POST /api/v1/teams/{id}/members", handlers.HandleAddTeamMember)
+	mux.HandleFunc("GET /api/v1/teams/{id}/members", handlers.HandleListTeamMembers)
+	mux.HandleFunc("DELETE /api/v1/teams/{id}/members/{agent_id}", handlers.HandleRemoveTeamMember)
+
 	// SSE events
 	mux.HandleFunc("GET /api/v1/events", hub.HandleSSE)
 

@@ -15,6 +15,9 @@ type WatcherConfig struct {
 	// EntityIDs to watch. If empty, the watcher does nothing until entities are added.
 	EntityIDs []string
 
+	// TeamIDs to run team heartbeats for. Each team+entity pair gets a separate team heartbeat.
+	TeamIDs []string
+
 	// Heartbeat options applied to every check.
 	HeartbeatOpts []HeartbeatOption
 }
@@ -36,6 +39,7 @@ type Watcher struct {
 
 	mu        sync.RWMutex
 	entityIDs map[string]bool
+	teamIDs   map[string]bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -51,6 +55,11 @@ func newWatcher(k *Keyoku, config WatcherConfig) *Watcher {
 		entityMap[id] = true
 	}
 
+	teamMap := make(map[string]bool)
+	for _, id := range config.TeamIDs {
+		teamMap[id] = true
+	}
+
 	if config.Interval <= 0 {
 		config.Interval = 10 * time.Second
 	}
@@ -60,6 +69,7 @@ func newWatcher(k *Keyoku, config WatcherConfig) *Watcher {
 		config:    config,
 		logger:    k.logger.With("component", "watcher"),
 		entityIDs: entityMap,
+		teamIDs:   teamMap,
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -91,6 +101,20 @@ func (w *Watcher) Unwatch(entityID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.entityIDs, entityID)
+}
+
+// WatchTeam adds a team ID to the watch list for team heartbeats.
+func (w *Watcher) WatchTeam(teamID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.teamIDs[teamID] = true
+}
+
+// UnwatchTeam removes a team ID from the watch list.
+func (w *Watcher) UnwatchTeam(teamID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.teamIDs, teamID)
 }
 
 // WatchedEntities returns the current list of watched entity IDs.
@@ -126,10 +150,14 @@ func (w *Watcher) checkAll() {
 	for id := range w.entityIDs {
 		ids = append(ids, id)
 	}
+	teamIDs := make([]string, 0, len(w.teamIDs))
+	for id := range w.teamIDs {
+		teamIDs = append(teamIDs, id)
+	}
 	w.mu.RUnlock()
 
+	// Per-entity heartbeats (agent-level)
 	for _, entityID := range ids {
-		// Respect context cancellation
 		if w.ctx.Err() != nil {
 			return
 		}
@@ -144,8 +172,31 @@ func (w *Watcher) checkAll() {
 			continue
 		}
 
-		// Emit granular events for each category
 		w.emitHeartbeatEvents(entityID, result)
+	}
+
+	// Team heartbeats — run for each team+entity combination
+	if len(teamIDs) > 0 {
+		for _, teamID := range teamIDs {
+			for _, entityID := range ids {
+				if w.ctx.Err() != nil {
+					return
+				}
+
+				teamOpts := append(w.config.HeartbeatOpts, WithTeamHeartbeat(teamID))
+				result, err := w.keyoku.HeartbeatCheck(w.ctx, entityID, teamOpts...)
+				if err != nil {
+					w.logger.Debug("team heartbeat check failed", "team", teamID, "entity", entityID, "error", err)
+					continue
+				}
+
+				if !result.ShouldAct {
+					continue
+				}
+
+				w.emitTeamHeartbeatEvents(entityID, teamID, result)
+			}
+		}
 	}
 }
 
@@ -246,4 +297,24 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			},
 		})
 	}
+}
+
+func (w *Watcher) emitTeamHeartbeatEvents(entityID, teamID string, result *HeartbeatResult) {
+	bus := w.keyoku.eventBus
+
+	bus.Emit(Event{
+		Type:     EventTeamHeartbeatSignal,
+		EntityID: entityID,
+		TeamID:   teamID,
+		Data: map[string]any{
+			"summary":        result.Summary,
+			"pending_work":   len(result.PendingWork),
+			"deadlines":      len(result.Deadlines),
+			"scheduled":      len(result.Scheduled),
+			"decaying":       len(result.Decaying),
+			"conflicts":      len(result.Conflicts),
+			"stale_monitors": len(result.StaleMonitors),
+			"by_agent":       result.ByAgent,
+		},
+	})
 }

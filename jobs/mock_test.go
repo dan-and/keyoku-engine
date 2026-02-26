@@ -255,6 +255,13 @@ func (m *mockStore) DeleteCustomExtraction(ctx context.Context, id string) error
 func (m *mockStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaID string) error {
 	if m.deleteCustomExtractionsBySchemaFn != nil { return m.deleteCustomExtractionsBySchemaFn(ctx, schemaID) }; return nil
 }
+func (m *mockStore) CreateTeam(_ context.Context, _ *storage.Team) error { return nil }
+func (m *mockStore) GetTeam(_ context.Context, _ string) (*storage.Team, error) { return nil, nil }
+func (m *mockStore) DeleteTeam(_ context.Context, _ string) error { return nil }
+func (m *mockStore) AddTeamMember(_ context.Context, _, _ string) error { return nil }
+func (m *mockStore) RemoveTeamMember(_ context.Context, _, _ string) error { return nil }
+func (m *mockStore) GetTeamMembers(_ context.Context, _ string) ([]*storage.TeamMember, error) { return nil, nil }
+func (m *mockStore) GetTeamForAgent(_ context.Context, _ string) (string, error) { return "", nil }
 func (m *mockStore) CreateAgentState(_ context.Context, _ *storage.AgentState) error { return nil }
 func (m *mockStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.AgentState, error) { return nil, nil }
 func (m *mockStore) UpdateAgentState(_ context.Context, _ string, _ map[string]any) error { return nil }

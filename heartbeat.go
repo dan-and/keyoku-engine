@@ -25,6 +25,19 @@ type HeartbeatResult struct {
 	PriorityAction string   // The single most important action
 	ActionItems    []string // All items ordered by priority
 	Urgency        string   // "immediate", "soon", "can_wait"
+
+	// Team heartbeat fields (populated only in team heartbeat mode)
+	ByAgent map[string]*AgentHeartbeatSummary // per-agent breakdown (team mode only)
+}
+
+// AgentHeartbeatSummary contains heartbeat counts attributed to a specific agent.
+type AgentHeartbeatSummary struct {
+	AgentID     string
+	PendingWork int
+	Deadlines   int
+	Scheduled   int
+	Decaying    int
+	Conflicts   int
 }
 
 // ConflictPair re-exported from storage for public API.
@@ -40,6 +53,10 @@ type heartbeatConfig struct {
 	maxResults      int
 	agentID         string
 	checks          []HeartbeatCheckType
+
+	// Team heartbeat
+	teamID        string // When set, runs team-wide heartbeat
+	teamHeartbeat bool   // Enables team heartbeat mode
 
 	// LLM prioritization (opt-in)
 	llmProvider    llm.Provider
@@ -94,6 +111,16 @@ func WithChecks(checks ...HeartbeatCheckType) HeartbeatOption {
 	return func(c *heartbeatConfig) { c.checks = checks }
 }
 
+// WithTeamHeartbeat enables team-wide heartbeat mode.
+// Queries team-visible and global memories across all agents in the team.
+// Results include ByAgent attribution showing which agent owns each signal.
+func WithTeamHeartbeat(teamID string) HeartbeatOption {
+	return func(c *heartbeatConfig) {
+		c.teamID = teamID
+		c.teamHeartbeat = true
+	}
+}
+
 // WithLLMPrioritization enables LLM-powered action prioritization on heartbeat results.
 // Only fires when ShouldAct is true. The provider should be the same one used for memory extraction.
 func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
@@ -118,23 +145,46 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		opt(cfg)
 	}
 
+	// Build visibility context for team-aware queries
+	var visibilityFor *storage.VisibilityContext
+	if cfg.teamHeartbeat && cfg.teamID != "" {
+		// Team heartbeat: see team + global memories (no private — agentID left empty)
+		visibilityFor = &storage.VisibilityContext{TeamID: cfg.teamID}
+	} else if cfg.agentID != "" {
+		// Agent-level: auto-resolve team if agent belongs to one
+		if teamID, err := k.store.GetTeamForAgent(ctx, cfg.agentID); err == nil && teamID != "" {
+			visibilityFor = &storage.VisibilityContext{AgentID: cfg.agentID, TeamID: teamID}
+		}
+	}
+
 	result := &HeartbeatResult{}
 	checksToRun := make(map[HeartbeatCheckType]bool)
 	for _, c := range cfg.checks {
 		checksToRun[c] = true
 	}
 
+	// Helper to build a query with visibility applied
+	buildQuery := func(q storage.MemoryQuery) storage.MemoryQuery {
+		if visibilityFor != nil {
+			q.VisibilityFor = visibilityFor
+			// When using visibility filtering, don't also filter by agent_id
+			// (VisibilityFor handles the scoping)
+			q.AgentID = ""
+		}
+		return q
+	}
+
 	// 1. PENDING WORK — PLAN/ACTIVITY memories, active state, importance > threshold
 	if checksToRun[CheckPendingWork] {
-		pending, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
-			EntityID: entityID,
-			AgentID:  cfg.agentID,
-			Types:    []storage.MemoryType{storage.TypePlan, storage.TypeActivity},
-			States:   []storage.MemoryState{storage.StateActive},
-			Limit:    cfg.maxResults,
-			OrderBy:  "importance",
+		pending, err := k.store.QueryMemories(ctx, buildQuery(storage.MemoryQuery{
+			EntityID:   entityID,
+			AgentID:    cfg.agentID,
+			Types:      []storage.MemoryType{storage.TypePlan, storage.TypeActivity},
+			States:     []storage.MemoryState{storage.StateActive},
+			Limit:      cfg.maxResults,
+			OrderBy:    "importance",
 			Descending: true,
-		})
+		}))
 		if err == nil {
 			for _, m := range pending {
 				if m.Importance >= cfg.importanceFloor {
@@ -146,14 +196,14 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 
 	// 2. DEADLINES — Memories with expires_at approaching
 	if checksToRun[CheckDeadlines] {
-		allActive, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
-			EntityID: entityID,
-			AgentID:  cfg.agentID,
-			States:   []storage.MemoryState{storage.StateActive},
-			Limit:    cfg.maxResults * 5,
-			OrderBy:  "importance",
+		allActive, err := k.store.QueryMemories(ctx, buildQuery(storage.MemoryQuery{
+			EntityID:   entityID,
+			AgentID:    cfg.agentID,
+			States:     []storage.MemoryState{storage.StateActive},
+			Limit:      cfg.maxResults * 5,
+			OrderBy:    "importance",
 			Descending: true,
-		})
+		}))
 		if err == nil {
 			deadlineHorizon := time.Now().Add(cfg.deadlineWindow)
 			for _, m := range allActive {
@@ -169,12 +219,12 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 
 	// 3. SCHEDULED (CRON) — Memories tagged "cron:*" where due
 	if checksToRun[CheckScheduled] {
-		allActive, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		allActive, err := k.store.QueryMemories(ctx, buildQuery(storage.MemoryQuery{
 			EntityID: entityID,
 			AgentID:  cfg.agentID,
 			States:   []storage.MemoryState{storage.StateActive},
 			Limit:    cfg.maxResults * 5,
-		})
+		}))
 		if err == nil {
 			now := time.Now()
 			for _, m := range allActive {
@@ -200,6 +250,10 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		if err == nil {
 			for _, m := range stale {
 				if m.Importance >= 0.8 {
+					// Apply visibility filter for team-aware heartbeat
+					if visibilityFor != nil && !storage.IsVisibleTo(m.Visibility, m.AgentID, m.TeamID, visibilityFor) {
+						continue
+					}
 					result.Decaying = append(result.Decaying, m)
 					if len(result.Decaying) >= cfg.maxResults {
 						break
@@ -211,12 +265,12 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 
 	// 5. CONFLICTS — Unresolved conflicts (flagged in confidence_factors)
 	if checksToRun[CheckConflicts] {
-		allActive, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		allActive, err := k.store.QueryMemories(ctx, buildQuery(storage.MemoryQuery{
 			EntityID: entityID,
 			AgentID:  cfg.agentID,
 			States:   []storage.MemoryState{storage.StateActive},
 			Limit:    cfg.maxResults * 5,
-		})
+		}))
 		if err == nil {
 			for _, m := range allActive {
 				for _, factor := range m.ConfidenceFactors {
@@ -237,13 +291,13 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 
 	// 6. STALE MONITORS — PLAN memories tagged "monitor" not accessed within expected window
 	if checksToRun[CheckStale] {
-		plans, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		plans, err := k.store.QueryMemories(ctx, buildQuery(storage.MemoryQuery{
 			EntityID: entityID,
 			AgentID:  cfg.agentID,
 			Types:    []storage.MemoryType{storage.TypePlan},
 			States:   []storage.MemoryState{storage.StateActive},
 			Limit:    cfg.maxResults * 3,
-		})
+		}))
 		if err == nil {
 			now := time.Now()
 			for _, m := range plans {
@@ -262,6 +316,11 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				}
 			}
 		}
+	}
+
+	// Build ByAgent attribution for team heartbeat mode
+	if cfg.teamHeartbeat {
+		result.ByAgent = buildByAgentAttribution(result)
 	}
 
 	// Determine if action is needed
@@ -335,13 +394,50 @@ func hasTag(tags []string, target string) bool {
 	return false
 }
 
+func buildByAgentAttribution(result *HeartbeatResult) map[string]*AgentHeartbeatSummary {
+	byAgent := make(map[string]*AgentHeartbeatSummary)
+
+	getOrCreate := func(agentID string) *AgentHeartbeatSummary {
+		if s, ok := byAgent[agentID]; ok {
+			return s
+		}
+		s := &AgentHeartbeatSummary{AgentID: agentID}
+		byAgent[agentID] = s
+		return s
+	}
+
+	for _, m := range result.PendingWork {
+		getOrCreate(m.AgentID).PendingWork++
+	}
+	for _, m := range result.Deadlines {
+		getOrCreate(m.AgentID).Deadlines++
+	}
+	for _, m := range result.Scheduled {
+		getOrCreate(m.AgentID).Scheduled++
+	}
+	for _, m := range result.Decaying {
+		getOrCreate(m.AgentID).Decaying++
+	}
+	for _, c := range result.Conflicts {
+		getOrCreate(c.MemoryA.AgentID).Conflicts++
+	}
+
+	return byAgent
+}
+
 func buildSummary(result *HeartbeatResult) string {
 	var parts []string
+
+	isTeam := result.ByAgent != nil
 
 	if len(result.PendingWork) > 0 {
 		parts = append(parts, fmt.Sprintf("PENDING WORK (%d):", len(result.PendingWork)))
 		for _, m := range result.PendingWork {
-			parts = append(parts, fmt.Sprintf("  - [%s] %s (importance: %.2f)", m.Type, m.Content, m.Importance))
+			if isTeam {
+				parts = append(parts, fmt.Sprintf("  - [%s] %s (importance: %.2f, agent: %s)", m.Type, m.Content, m.Importance, m.AgentID))
+			} else {
+				parts = append(parts, fmt.Sprintf("  - [%s] %s (importance: %.2f)", m.Type, m.Content, m.Importance))
+			}
 		}
 	}
 

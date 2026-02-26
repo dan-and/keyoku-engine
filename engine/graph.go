@@ -77,6 +77,7 @@ type GraphQuery struct {
 	MaxDepth          int
 	Direction         string // "outgoing", "incoming", or "both"
 	IncludeMemories   bool
+	TeamID            string // When set, include team-scoped relationships in traversal
 }
 
 // TraverseFrom performs a breadth-first traversal from an entity.
@@ -280,6 +281,12 @@ func (g *GraphEngine) getEdges(ctx context.Context, ownerEntityID, entityID stri
 
 	var edges []*GraphEdge
 	for _, rel := range rels {
+		// Filter by team scope: when TeamID is set, include relationships
+		// that belong to the team or have no team (backward compat)
+		if query.TeamID != "" && rel.TeamID != "" && rel.TeamID != query.TeamID {
+			continue
+		}
+
 		// Filter by relationship type if specified
 		if len(query.RelationshipTypes) > 0 {
 			matched := false

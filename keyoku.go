@@ -23,6 +23,9 @@ type (
 	Memory           = storage.Memory
 	MemoryType       = storage.MemoryType
 	MemoryState      = storage.MemoryState
+	MemoryVisibility = storage.MemoryVisibility
+	Team             = storage.Team
+	TeamMember       = storage.TeamMember
 	Entity           = storage.Entity
 	EntityType       = storage.EntityType
 	Relationship     = storage.Relationship
@@ -30,6 +33,13 @@ type (
 	CustomExtraction = storage.CustomExtraction
 	SearchResult     = engine.QueryResult
 	Stats            = engine.Stats
+)
+
+// Re-export visibility constants.
+const (
+	VisibilityPrivate = storage.VisibilityPrivate
+	VisibilityTeam    = storage.VisibilityTeam
+	VisibilityGlobal  = storage.VisibilityGlobal
 )
 
 // Re-export memory type constants.
@@ -195,10 +205,12 @@ func (k *Keyoku) Watcher() *Watcher {
 type RememberOption func(*rememberConfig)
 
 type rememberConfig struct {
-	sessionID string
-	agentID   string
-	source    string
-	schemaID  string
+	sessionID  string
+	agentID    string
+	source     string
+	schemaID   string
+	teamID     string
+	visibility storage.MemoryVisibility
 }
 
 // WithSessionID sets the session ID for a Remember call.
@@ -221,6 +233,17 @@ func WithSchemaID(id string) RememberOption {
 	return func(c *rememberConfig) { c.schemaID = id }
 }
 
+// WithTeamID associates the memory with a team.
+// When set and no explicit visibility is given, defaults to VisibilityTeam (share-by-default).
+func WithTeamID(id string) RememberOption {
+	return func(c *rememberConfig) { c.teamID = id }
+}
+
+// WithVisibility sets the visibility level of the memory.
+func WithVisibility(v storage.MemoryVisibility) RememberOption {
+	return func(c *rememberConfig) { c.visibility = v }
+}
+
 // RememberResult contains the result of a Remember call.
 type RememberResult struct {
 	MemoriesCreated     int
@@ -239,12 +262,22 @@ func (k *Keyoku) Remember(ctx context.Context, entityID, content string, opts ..
 		opt(cfg)
 	}
 
+	// If agent has a team but caller didn't provide one, auto-resolve
+	teamID := cfg.teamID
+	if teamID == "" && cfg.agentID != "" {
+		if resolved, err := k.store.GetTeamForAgent(ctx, cfg.agentID); err == nil && resolved != "" {
+			teamID = resolved
+		}
+	}
+
 	result, err := k.engine.Add(ctx, entityID, engine.AddRequest{
-		Content:   content,
-		SessionID: cfg.sessionID,
-		AgentID:   cfg.agentID,
-		Source:    cfg.source,
-		SchemaID: cfg.schemaID,
+		Content:    content,
+		SessionID:  cfg.sessionID,
+		AgentID:    cfg.agentID,
+		Source:     cfg.source,
+		SchemaID:   cfg.schemaID,
+		TeamID:     teamID,
+		Visibility: cfg.visibility,
 	})
 	if err != nil {
 		return nil, err
@@ -267,9 +300,10 @@ func (k *Keyoku) Remember(ctx context.Context, entityID, content string, opts ..
 type SearchOption func(*searchConfig)
 
 type searchConfig struct {
-	limit   int
-	mode    engine.ScorerMode
-	agentID string
+	limit     int
+	mode      engine.ScorerMode
+	agentID   string
+	teamAware bool
 }
 
 // WithLimit sets the maximum number of results.
@@ -287,6 +321,16 @@ func WithSearchAgentID(id string) SearchOption {
 	return func(c *searchConfig) { c.agentID = id }
 }
 
+// WithTeamAwareness enables team-aware visibility filtering for search.
+// The agent's team is auto-resolved, and results include the agent's private
+// memories, team-visible memories, and global memories.
+func WithTeamAwareness(agentID string) SearchOption {
+	return func(c *searchConfig) {
+		c.agentID = agentID
+		c.teamAware = true
+	}
+}
+
 // Search retrieves memories relevant to a query.
 func (k *Keyoku) Search(ctx context.Context, entityID, query string, opts ...SearchOption) ([]*SearchResult, error) {
 	cfg := &searchConfig{limit: 10}
@@ -294,12 +338,22 @@ func (k *Keyoku) Search(ctx context.Context, entityID, query string, opts ...Sea
 		opt(cfg)
 	}
 
-	return k.engine.Query(ctx, entityID, engine.QueryRequest{
-		Query:   query,
-		Limit:   cfg.limit,
-		Mode:    cfg.mode,
-		AgentID: cfg.agentID,
-	})
+	qr := engine.QueryRequest{
+		Query:     query,
+		Limit:     cfg.limit,
+		Mode:      cfg.mode,
+		AgentID:   cfg.agentID,
+		TeamAware: cfg.teamAware,
+	}
+
+	// Resolve team for visibility filtering
+	if cfg.teamAware && cfg.agentID != "" {
+		if teamID, err := k.store.GetTeamForAgent(ctx, cfg.agentID); err == nil && teamID != "" {
+			qr.TeamID = teamID
+		}
+	}
+
+	return k.engine.Query(ctx, entityID, qr)
 }
 
 // List returns all memories for an entity.
@@ -536,4 +590,60 @@ func (k *Keyoku) Close() error {
 		k.store.Close()
 	}
 	return nil
+}
+
+// --- Team Service ---
+
+// TeamService provides team management operations.
+type TeamService struct {
+	store storage.Store
+}
+
+// Teams returns the team service.
+func (k *Keyoku) Teams() *TeamService {
+	return &TeamService{store: k.store}
+}
+
+// Create creates a new team and returns it.
+func (ts *TeamService) Create(ctx context.Context, name, description string) (*Team, error) {
+	team := &storage.Team{
+		Name:              name,
+		Description:       description,
+		DefaultVisibility: storage.VisibilityTeam,
+	}
+	if err := ts.store.CreateTeam(ctx, team); err != nil {
+		return nil, err
+	}
+	return team, nil
+}
+
+// Get retrieves a team by ID.
+func (ts *TeamService) Get(ctx context.Context, id string) (*Team, error) {
+	return ts.store.GetTeam(ctx, id)
+}
+
+// Delete removes a team and all its memberships.
+func (ts *TeamService) Delete(ctx context.Context, id string) error {
+	return ts.store.DeleteTeam(ctx, id)
+}
+
+// AddMember adds an agent to a team.
+// An agent can only belong to one team (enforced by UNIQUE constraint).
+func (ts *TeamService) AddMember(ctx context.Context, teamID, agentID string) error {
+	return ts.store.AddTeamMember(ctx, teamID, agentID)
+}
+
+// RemoveMember removes an agent from a team.
+func (ts *TeamService) RemoveMember(ctx context.Context, teamID, agentID string) error {
+	return ts.store.RemoveTeamMember(ctx, teamID, agentID)
+}
+
+// Members lists all members of a team.
+func (ts *TeamService) Members(ctx context.Context, teamID string) ([]*TeamMember, error) {
+	return ts.store.GetTeamMembers(ctx, teamID)
+}
+
+// ForAgent returns the team ID for an agent, or empty string if not in a team.
+func (ts *TeamService) ForAgent(ctx context.Context, agentID string) (string, error) {
+	return ts.store.GetTeamForAgent(ctx, agentID)
 }

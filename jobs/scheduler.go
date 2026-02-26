@@ -41,7 +41,7 @@ type JobSchedule struct {
 }
 
 // EventEmitter is a callback for emitting events from the scheduler.
-type EventEmitter func(eventType string, entityID string, agentID string, data map[string]any)
+type EventEmitter func(eventType string, entityID string, agentID string, teamID string, data map[string]any)
 
 // Scheduler manages background jobs using in-memory timers.
 type Scheduler struct {
@@ -233,7 +233,7 @@ func (s *Scheduler) executeJob(processor JobProcessor) {
 	if err != nil {
 		logger.Error("job failed", "error", err, "duration_ms", duration.Milliseconds())
 		if s.emitter != nil {
-			s.emitter("job.failed", "", "", map[string]any{
+			s.emitter("job.failed", "", "", "", map[string]any{
 				"job_type":    string(processor.Type()),
 				"error":       err.Error(),
 				"duration_ms": duration.Milliseconds(),
@@ -246,7 +246,7 @@ func (s *Scheduler) executeJob(processor JobProcessor) {
 			"items_affected", result.ItemsAffected,
 		)
 		if s.emitter != nil && result.ItemsAffected > 0 {
-			s.emitter("job.completed", "", "", map[string]any{
+			s.emitter("job.completed", "", "", "", map[string]any{
 				"job_type":        string(processor.Type()),
 				"items_processed": result.ItemsProcessed,
 				"items_affected":  result.ItemsAffected,

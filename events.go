@@ -39,6 +39,12 @@ const (
 	EventConflictUnresolved   EventType = "heartbeat.conflict_unresolved"
 	EventPendingWork          EventType = "heartbeat.pending_work"
 
+	// Team events — fired from team operations and team heartbeat
+	EventTeamHeartbeatSignal EventType = "heartbeat.team_signal"
+	EventTeamMemoryShared    EventType = "team.memory_shared"
+	EventTeamMemberAdded     EventType = "team.member_added"
+	EventTeamMemberRemoved   EventType = "team.member_removed"
+
 	// Job events — fired from background scheduler
 	EventJobCompleted EventType = "job.completed"
 	EventJobFailed    EventType = "job.failed"
@@ -49,6 +55,7 @@ type Event struct {
 	Type      EventType
 	EntityID  string
 	AgentID   string
+	TeamID    string
 	Memory    *Memory
 	Data      map[string]any
 	Timestamp time.Time
@@ -116,12 +123,13 @@ func (eb *EventBus) Emit(event Event) {
 }
 
 // emitterFunc returns the engine-compatible callback that translates raw event data into typed Events.
-func (eb *EventBus) emitterFunc() func(eventType string, entityID string, agentID string, data map[string]any) {
-	return func(eventType string, entityID string, agentID string, data map[string]any) {
+func (eb *EventBus) emitterFunc() func(eventType string, entityID string, agentID string, teamID string, data map[string]any) {
+	return func(eventType string, entityID string, agentID string, teamID string, data map[string]any) {
 		event := Event{
 			Type:      EventType(eventType),
 			EntityID:  entityID,
 			AgentID:   agentID,
+			TeamID:    teamID,
 			Data:      data,
 			Timestamp: time.Now(),
 		}

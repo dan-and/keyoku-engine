@@ -99,6 +99,15 @@ type Store interface {
 	GetAgentStateHistory(ctx context.Context, stateID string, limit int) ([]*AgentStateHistory, error)
 	LogAgentStateHistory(ctx context.Context, entry *AgentStateHistory) error
 
+	// Team CRUD
+	CreateTeam(ctx context.Context, team *Team) error
+	GetTeam(ctx context.Context, id string) (*Team, error)
+	DeleteTeam(ctx context.Context, id string) error
+	AddTeamMember(ctx context.Context, teamID, agentID string) error
+	RemoveTeamMember(ctx context.Context, teamID, agentID string) error
+	GetTeamMembers(ctx context.Context, teamID string) ([]*TeamMember, error)
+	GetTeamForAgent(ctx context.Context, agentID string) (string, error) // returns team_id or ""
+
 	// Maintenance
 	Close() error
 	Ping(ctx context.Context) error

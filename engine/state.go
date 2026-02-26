@@ -114,7 +114,7 @@ func (sm *StateManager) Update(ctx context.Context, entityID, agentID, schemaNam
 
 	// Emit state changed event
 	if sm.emitter != nil {
-		sm.emitter("state.changed", entityID, agentID, map[string]any{
+		sm.emitter("state.changed", entityID, agentID, "", map[string]any{
 			"schema_name":     schemaName,
 			"changed_fields":  resp.ChangedFields,
 			"previous_state":  agentState.CurrentState,

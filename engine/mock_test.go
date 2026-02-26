@@ -118,6 +118,10 @@ func (m *mockStore) FindSimilarWithOptions(ctx context.Context, embedding []floa
 	if m.findSimilarWithOptionsFn != nil {
 		return m.findSimilarWithOptionsFn(ctx, embedding, entityID, limit, minScore, opts)
 	}
+	// Fall back to findSimilarFn for backward compatibility with existing tests
+	if m.findSimilarFn != nil {
+		return m.findSimilarFn(ctx, embedding, entityID, limit, minScore)
+	}
 	return nil, nil
 }
 func (m *mockStore) QueryMemories(ctx context.Context, query storage.MemoryQuery) ([]*storage.Memory, error) {
@@ -447,6 +451,13 @@ func (m *mockStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaI
 	}
 	return nil
 }
+func (m *mockStore) CreateTeam(_ context.Context, _ *storage.Team) error { return nil }
+func (m *mockStore) GetTeam(_ context.Context, _ string) (*storage.Team, error) { return nil, nil }
+func (m *mockStore) DeleteTeam(_ context.Context, _ string) error { return nil }
+func (m *mockStore) AddTeamMember(_ context.Context, _, _ string) error { return nil }
+func (m *mockStore) RemoveTeamMember(_ context.Context, _, _ string) error { return nil }
+func (m *mockStore) GetTeamMembers(_ context.Context, _ string) ([]*storage.TeamMember, error) { return nil, nil }
+func (m *mockStore) GetTeamForAgent(_ context.Context, _ string) (string, error) { return "", nil }
 func (m *mockStore) CreateAgentState(_ context.Context, _ *storage.AgentState) error { return nil }
 func (m *mockStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.AgentState, error) {
 	return nil, nil

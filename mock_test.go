@@ -253,6 +253,13 @@ func (m *testStore) DeleteCustomExtraction(ctx context.Context, id string) error
 func (m *testStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaID string) error {
 	if m.deleteCustomExtractionsBySchemaFn != nil { return m.deleteCustomExtractionsBySchemaFn(ctx, schemaID) }; return nil
 }
+func (m *testStore) CreateTeam(_ context.Context, _ *storage.Team) error { return nil }
+func (m *testStore) GetTeam(_ context.Context, _ string) (*storage.Team, error) { return nil, nil }
+func (m *testStore) DeleteTeam(_ context.Context, _ string) error { return nil }
+func (m *testStore) AddTeamMember(_ context.Context, _, _ string) error { return nil }
+func (m *testStore) RemoveTeamMember(_ context.Context, _, _ string) error { return nil }
+func (m *testStore) GetTeamMembers(_ context.Context, _ string) ([]*storage.TeamMember, error) { return nil, nil }
+func (m *testStore) GetTeamForAgent(_ context.Context, _ string) (string, error) { return "", nil }
 func (m *testStore) CreateAgentState(_ context.Context, _ *storage.AgentState) error { return nil }
 func (m *testStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.AgentState, error) { return nil, nil }
 func (m *testStore) UpdateAgentState(_ context.Context, _ string, _ map[string]any) error { return nil }

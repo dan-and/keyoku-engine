@@ -136,7 +136,7 @@ func TestEmitterFunc_TranslatesRawEvents(t *testing.T) {
 	})
 
 	fn := bus.emitterFunc()
-	fn("memory.created", "entity-1", "agent-1", map[string]any{
+	fn("memory.created", "entity-1", "agent-1", "", map[string]any{
 		"content": "hello world",
 	})
 
