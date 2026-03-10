@@ -48,12 +48,13 @@ type rememberResponse struct {
 }
 
 type searchRequest struct {
-	EntityID  string `json:"entity_id"`
-	Query     string `json:"query"`
-	Limit     int    `json:"limit,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	AgentID   string `json:"agent_id,omitempty"`
-	TeamAware bool   `json:"team_aware,omitempty"`
+	EntityID  string  `json:"entity_id"`
+	Query     string  `json:"query"`
+	Limit     int     `json:"limit,omitempty"`
+	Mode      string  `json:"mode,omitempty"`
+	AgentID   string  `json:"agent_id,omitempty"`
+	TeamAware bool    `json:"team_aware,omitempty"`
+	MinScore  float64 `json:"min_score,omitempty"`
 }
 
 type searchResultItem struct {
@@ -109,6 +110,28 @@ type heartbeatCheckResponse struct {
 type conflictJSON struct {
 	Memory memoryJSON `json:"memory"`
 	Reason string     `json:"reason"`
+}
+
+// Combined heartbeat + context search in a single call.
+type heartbeatContextRequest struct {
+	EntityID        string  `json:"entity_id"`
+	Query           string  `json:"query,omitempty"`           // Current conversation context for memory search
+	TopK            int     `json:"top_k,omitempty"`           // Max relevant memories to return (default: 5)
+	MinScore        float64 `json:"min_score,omitempty"`       // Min similarity for context search (default: 0.1)
+	DeadlineWindow  string  `json:"deadline_window,omitempty"` // How far ahead to look (default: 24h)
+	MaxResults      int     `json:"max_results,omitempty"`     // Max signals per category (default: 10)
+	AgentID         string  `json:"agent_id,omitempty"`
+	TeamID          string  `json:"team_id,omitempty"`
+}
+
+type heartbeatContextResponse struct {
+	ShouldAct        bool              `json:"should_act"`
+	Scheduled        []memoryJSON      `json:"scheduled"`
+	Deadlines        []memoryJSON      `json:"deadlines"`
+	PendingWork      []memoryJSON      `json:"pending_work"`
+	Conflicts        []conflictJSON    `json:"conflicts"`
+	RelevantMemories []searchResultItem `json:"relevant_memories"`
+	Summary          string            `json:"summary"`
 }
 
 type watcherStartRequest struct {
@@ -245,6 +268,9 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	if req.Limit > 0 {
 		opts = append(opts, keyoku.WithLimit(req.Limit))
 	}
+	if req.MinScore > 0 {
+		opts = append(opts, keyoku.WithMinScore(req.MinScore))
+	}
 	if req.TeamAware && req.AgentID != "" {
 		opts = append(opts, keyoku.WithTeamAwareness(req.AgentID))
 	} else if req.AgentID != "" {
@@ -339,6 +365,106 @@ func (h *Handlers) HandleHeartbeatCheck(w http.ResponseWriter, r *http.Request) 
 		PriorityAction: result.PriorityAction,
 		ActionItems:    result.ActionItems,
 		Urgency:        result.Urgency,
+	})
+}
+
+// HandleHeartbeatContext performs a combined heartbeat check + context-relevant memory search.
+// Returns heartbeat signals (scheduled, deadlines, pending work, conflicts) plus
+// memories relevant to the current conversation — all in one call.
+func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request) {
+	var req heartbeatContextRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.EntityID == "" {
+		writeError(w, http.StatusBadRequest, "entity_id is required")
+		return
+	}
+
+	// Defaults
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+	if req.MinScore <= 0 {
+		req.MinScore = 0.1
+	}
+	if req.MaxResults <= 0 {
+		req.MaxResults = 10
+	}
+
+	// 1. Heartbeat check — skip decay, focus on actionable signals
+	hbOpts := []keyoku.HeartbeatOption{
+		keyoku.WithMaxResults(req.MaxResults),
+		keyoku.WithChecks(
+			keyoku.CheckScheduled,
+			keyoku.CheckDeadlines,
+			keyoku.CheckPendingWork,
+			keyoku.CheckConflicts,
+		),
+	}
+	if req.DeadlineWindow != "" {
+		if d, err := time.ParseDuration(req.DeadlineWindow); err == nil {
+			hbOpts = append(hbOpts, keyoku.WithDeadlineWindow(d))
+		}
+	}
+	if req.AgentID != "" {
+		hbOpts = append(hbOpts, keyoku.WithHeartbeatAgentID(req.AgentID))
+	}
+	if req.TeamID != "" {
+		hbOpts = append(hbOpts, keyoku.WithTeamHeartbeat(req.TeamID))
+	}
+
+	hbResult, err := h.k.HeartbeatCheck(r.Context(), req.EntityID, hbOpts...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "heartbeat check failed: "+err.Error())
+		return
+	}
+
+	// 2. Context-relevant memory search (only if query provided)
+	var relevantMemories []searchResultItem
+	if req.Query != "" {
+		searchOpts := []keyoku.SearchOption{
+			keyoku.WithLimit(req.TopK),
+			keyoku.WithMinScore(req.MinScore),
+		}
+		if req.AgentID != "" {
+			searchOpts = append(searchOpts, keyoku.WithSearchAgentID(req.AgentID))
+		}
+
+		results, err := h.k.Search(r.Context(), req.EntityID, req.Query, searchOpts...)
+		if err == nil {
+			relevantMemories = make([]searchResultItem, 0, len(results))
+			for _, sr := range results {
+				relevantMemories = append(relevantMemories, searchResultItem{
+					Memory:     toMemoryJSON(sr.Memory),
+					Similarity: sr.Score.SemanticScore,
+					Score:      sr.Score.TotalScore,
+				})
+			}
+		}
+		// Search failure is non-fatal — heartbeat data is still returned
+	}
+
+	// 3. Build combined response
+	conflicts := make([]conflictJSON, 0, len(hbResult.Conflicts))
+	for _, c := range hbResult.Conflicts {
+		conflicts = append(conflicts, conflictJSON{
+			Memory: toMemoryJSON(c.MemoryA),
+			Reason: c.Reason,
+		})
+	}
+
+	shouldAct := hbResult.ShouldAct || len(relevantMemories) > 0
+
+	writeJSON(w, http.StatusOK, heartbeatContextResponse{
+		ShouldAct:        shouldAct,
+		Scheduled:        toMemoryJSONSlice(hbResult.Scheduled),
+		Deadlines:        toMemoryJSONSlice(hbResult.Deadlines),
+		PendingWork:      toMemoryJSONSlice(hbResult.PendingWork),
+		Conflicts:        conflicts,
+		RelevantMemories: relevantMemories,
+		Summary:          hbResult.Summary,
 	})
 }
 

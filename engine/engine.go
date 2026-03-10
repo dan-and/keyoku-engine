@@ -629,8 +629,9 @@ type QueryRequest struct {
 	Limit     int
 	Mode      ScorerMode
 	AgentID   string
-	TeamAware bool   // When true, resolve team and apply visibility filtering
-	TeamID    string // Team ID for visibility resolution
+	TeamAware bool    // When true, resolve team and apply visibility filtering
+	TeamID    string  // Team ID for visibility resolution
+	MinScore  float64 // Minimum similarity threshold (0 = use default 0.3)
 }
 
 // QueryResult represents a single query result.
@@ -671,10 +672,14 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 			TeamID:  req.TeamID,
 		}
 	}
+	minScore := req.MinScore
+	if minScore <= 0 {
+		minScore = 0.3 // default threshold
+	}
 	if req.AgentID != "" || req.TeamAware {
-		candidates, err = e.store.FindSimilarWithOptions(ctx, embedding, entityID, candidateCount, 0.3, opts)
+		candidates, err = e.store.FindSimilarWithOptions(ctx, embedding, entityID, candidateCount, minScore, opts)
 	} else {
-		candidates, err = e.store.FindSimilar(ctx, embedding, entityID, candidateCount, 0.3)
+		candidates, err = e.store.FindSimilar(ctx, embedding, entityID, candidateCount, minScore)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("similarity search failed: %w", err)

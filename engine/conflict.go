@@ -139,10 +139,10 @@ func (d *ConflictDetector) checkConflict(ctx context.Context, newContent string,
 		return heuristic
 	}
 
-	// LLM escalation: only when pattern matching found nothing but similarity is suspicious
-	// Similarity 0.6-0.85 with same subject = ambiguous zone worth checking with LLM
-	if d.config.EnableLLMConflictCheck && d.provider != nil &&
-		similarity >= 0.6 && similarity <= 0.85 && isSameSubject(newContent, existing.Content) {
+	// LLM escalation: patterns didn't catch it, let the LLM decide.
+	// Only called for memories already found similar by embedding search (>= SimilarityThreshold).
+	// Patterns above are the fast path; LLM is the intelligent catch-all.
+	if d.config.EnableLLMConflictCheck && d.provider != nil {
 		return d.llmConflictCheck(ctx, newContent, existing, newType)
 	}
 

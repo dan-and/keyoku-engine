@@ -319,6 +319,7 @@ type searchConfig struct {
 	mode      engine.ScorerMode
 	agentID   string
 	teamAware bool
+	minScore  float64 // 0 means use engine default (0.3)
 }
 
 // WithLimit sets the maximum number of results.
@@ -334,6 +335,11 @@ func WithMode(mode engine.ScorerMode) SearchOption {
 // WithSearchAgentID filters results by agent.
 func WithSearchAgentID(id string) SearchOption {
 	return func(c *searchConfig) { c.agentID = id }
+}
+
+// WithMinScore sets the minimum similarity threshold for search results.
+func WithMinScore(score float64) SearchOption {
+	return func(c *searchConfig) { c.minScore = score }
 }
 
 // WithTeamAwareness enables team-aware visibility filtering for search.
@@ -359,6 +365,7 @@ func (k *Keyoku) Search(ctx context.Context, entityID, query string, opts ...Sea
 		Mode:      cfg.mode,
 		AgentID:   cfg.agentID,
 		TeamAware: cfg.teamAware,
+		MinScore:  cfg.minScore,
 	}
 
 	// Resolve team for visibility filtering
