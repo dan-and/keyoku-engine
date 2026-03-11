@@ -1085,7 +1085,7 @@ func TestSQLiteStore_CustomExtractionCRUD(t *testing.T) {
 		SchemaID:           schema.ID,
 		ExtractedData:      map[string]any{"name": "Alice", "age": float64(30)},
 		ExtractionProvider: "openai",
-		ExtractionModel:    "gpt-4o-mini",
+		ExtractionModel:    "gpt-5-mini",
 		Confidence:         0.85,
 	}
 

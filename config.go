@@ -13,7 +13,7 @@ type Config struct {
 
 	// Extraction LLM
 	ExtractionProvider string // "google", "openai", "anthropic"
-	ExtractionModel    string // e.g., "gemini-2.5-flash", "gpt-4o-mini", "claude-3-5-haiku-latest"
+	ExtractionModel    string // e.g., "gemini-3-flash-preview", "gpt-5-mini", "claude-haiku-4-5-20251001"
 
 	// API Keys
 	GeminiAPIKey    string
@@ -69,7 +69,7 @@ func DefaultConfig(dbPath string) Config {
 	return Config{
 		DBPath:             dbPath,
 		ExtractionProvider: "openai",
-		ExtractionModel:    "gpt-4o-mini",
+		ExtractionModel:    "gpt-5-mini",
 		EmbeddingModel:     "text-embedding-3-small",
 		MaxExtractTokens:   4000,
 		ContextTurns:       5,

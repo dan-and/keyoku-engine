@@ -70,7 +70,7 @@ func TestNewProvider_OpenAI(t *testing.T) {
 	if p.Name() != "openai" {
 		t.Errorf("Name = %q", p.Name())
 	}
-	if p.Model() != "gpt-4o-mini" {
+	if p.Model() != "gpt-5-mini" {
 		t.Errorf("Model = %q, want default", p.Model())
 	}
 }
@@ -94,7 +94,7 @@ func TestNewProvider_Anthropic(t *testing.T) {
 	if p.Name() != "anthropic" {
 		t.Errorf("Name = %q", p.Name())
 	}
-	if p.Model() != "claude-3-5-haiku-latest" {
+	if p.Model() != "claude-haiku-4-5-20251001" {
 		t.Errorf("Model = %q, want default", p.Model())
 	}
 }
@@ -207,7 +207,7 @@ func TestFormatStateExtractionPrompt_Defaults(t *testing.T) {
 func TestGemini_ExtractMemories(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -242,7 +242,7 @@ func TestGemini_ExtractMemories(t *testing.T) {
 func TestGemini_ConsolidateMemories(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -265,7 +265,7 @@ func TestGemini_ConsolidateMemories(t *testing.T) {
 func TestGemini_ExtractWithSchema(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -296,7 +296,7 @@ func TestGemini_ExtractWithSchema(t *testing.T) {
 func TestGemini_ExtractState(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -324,7 +324,7 @@ func TestGemini_ExtractState(t *testing.T) {
 func TestOpenAI_ExtractMemories(t *testing.T) {
 	key := getKey(t, "OPENAI_API_KEY")
 
-	p, err := NewOpenAIProvider(key, "gpt-4o-mini", "")
+	p, err := NewOpenAIProvider(key, "gpt-5-mini", "")
 	if err != nil {
 		t.Fatalf("NewOpenAIProvider error = %v", err)
 	}
@@ -352,7 +352,7 @@ func TestOpenAI_ExtractMemories(t *testing.T) {
 func TestOpenAI_ConsolidateMemories(t *testing.T) {
 	key := getKey(t, "OPENAI_API_KEY")
 
-	p, err := NewOpenAIProvider(key, "gpt-4o-mini", "")
+	p, err := NewOpenAIProvider(key, "gpt-5-mini", "")
 	if err != nil {
 		t.Fatalf("NewOpenAIProvider error = %v", err)
 	}

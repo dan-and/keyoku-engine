@@ -1405,14 +1405,14 @@ func runAgentStressForProvider(t *testing.T, spec providerSpec) *agentStressRepo
 // LLM providers and compares their results side-by-side.
 //
 // Models tested:
-//   - OpenAI:    gpt-4.1-nano  ($0.10/$0.40 per 1M tokens)
+//   - OpenAI:    gpt-5-mini  ($0.10/$0.40 per 1M tokens)
 //   - Anthropic: claude-haiku-4-5-20251001  ($1.00/$5.00 per 1M tokens)
-//   - Gemini:    gemini-2.5-flash-lite  (~$0.10/$0.40 per 1M tokens)
+//   - Gemini:    gemini-3-flash-preview  (~$0.50/$3.00 per 1M tokens)
 func TestStress_AgentCompareProviders(t *testing.T) {
 	providers := []providerSpec{
-		{name: "OpenAI gpt-4.1-nano", provider: "openai", model: "gpt-4.1-nano", envKey: "OPENAI_API_KEY"},
+		{name: "OpenAI gpt-5-mini", provider: "openai", model: "gpt-5-mini", envKey: "OPENAI_API_KEY"},
 		{name: "Anthropic claude-haiku-4-5", provider: "anthropic", model: "claude-haiku-4-5-20251001", envKey: "ANTHROPIC_API_KEY"},
-		{name: "Gemini 2.5-flash-lite", provider: "gemini", model: "gemini-2.5-flash-lite", envKey: "GEMINI_API_KEY"},
+		{name: "Gemini 3-flash-preview", provider: "gemini", model: "gemini-3-flash-preview", envKey: "GEMINI_API_KEY"},
 	}
 
 	type providerResult struct {

@@ -172,54 +172,57 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│                 keyoku-server                │
-│              (HTTP + SSE layer)              │
-├─────────────────────────────────────────────┤
-│                  Keyoku Core                 │
-│  ┌──────────┐ ┌──────────┐ ┌─────────────┐ │
-│  │ Remember │ │  Search  │ │  Heartbeat  │ │
-│  │ Extract  │ │  Tiered  │ │  Zero-Token │ │
-│  └────┬─────┘ └────┬─────┘ └──────┬──────┘ │
-│       │             │              │         │
-│  ┌────▼─────────────▼──────────────▼──────┐ │
-│  │              Engine Layer              │ │
-│  │  dedup · conflict · entity · decay     │ │
-│  │  graph · ranker · scorer · retrieval   │ │
-│  └────────────────┬───────────────────────┘ │
-│                   │                          │
-│  ┌────────────────▼───────────────────────┐ │
-│  │           Storage (SQLite)             │ │
-│  │  memories · entities · relationships   │ │
-│  │  schemas · agent_state · teams         │ │
-│  └────────────────┬───────────────────────┘ │
-│                   │                          │
-│  ┌──────┐  ┌──────▼──────┐  ┌───────────┐  │
-│  │ LRU  │  │ HNSW Vector │  │ FTS (SQL) │  │
-│  │ Tier1│  │   Tier 2    │  │  Tier 3   │  │
-│  └──────┘  └─────────────┘  └───────────┘  │
-│                                              │
-│  ┌──────────────────────────────────────┐   │
-│  │         Background Jobs              │   │
-│  │  decay · consolidation · archival    │   │
-│  │  purge · eviction                    │   │
-│  └──────────────────────────────────────┘   │
-└─────────────────────────────────────────────┘
-         │                    │
-    ┌────▼────┐         ┌────▼────┐
-    │   LLM   │         │Embedder │
-    │ Extract │         │ Vectors │
-    └─────────┘         └─────────┘
+```mermaid
+block-beta
+  columns 1
+
+  block:server["keyoku-server (HTTP + SSE layer)"]
+    columns 3
+
+    block:core["Keyoku Core"]
+      columns 3
+      Remember["Remember\nExtract"] Search["Search\nTiered"] Heartbeat["Heartbeat\nZero-Token"]
+    end
+
+    block:engine["Engine Layer"]
+      columns 1
+      e1["dedup · conflict · entity · decay · graph · ranker · scorer · retrieval"]
+    end
+
+    block:storage["Storage (SQLite)"]
+      columns 1
+      s1["memories · entities · relationships · schemas · agent_state · teams"]
+    end
+
+    block:tiers
+      columns 3
+      LRU["LRU\nTier 1"] HNSW["HNSW Vector\nTier 2"] FTS["FTS (SQL)\nTier 3"]
+    end
+
+    block:jobs["Background Jobs"]
+      columns 1
+      j1["decay · consolidation · archival · purge · eviction"]
+    end
+  end
+
+  block:external
+    columns 2
+    LLM["LLM\nExtract"] Embedder["Embedder\nVectors"]
+  end
+
+  core --> engine
+  engine --> storage
+  storage --> tiers
+  server --> external
 ```
 
 ## LLM Providers
 
 | Provider | Extraction Model | Embedding | Custom Base URL |
 |----------|-----------------|-----------|-----------------|
-| OpenAI | gpt-4o-mini (default) | text-embedding-3-small | Yes |
-| Anthropic | claude-3-5-haiku-latest | — | Yes |
-| Google Gemini | gemini-2.5-flash | — | — |
+| OpenAI | gpt-5-mini (default) | text-embedding-3-small | Yes |
+| Anthropic | claude-haiku-4-5-20251001 | — | Yes |
+| Google Gemini | gemini-3-flash-preview | — | — |
 
 Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 
@@ -229,7 +232,7 @@ Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 keyoku.Config{
     DBPath:             "./keyoku.db",
     ExtractionProvider: "openai",        // "openai", "anthropic", "google"
-    ExtractionModel:    "gpt-4o-mini",
+    ExtractionModel:    "gpt-5-mini",
     OpenAIAPIKey:       "sk-...",
     EmbeddingModel:     "text-embedding-3-small",
 

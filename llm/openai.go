@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -21,7 +22,7 @@ type OpenAIProvider struct {
 
 func NewOpenAIProvider(apiKey, model, baseURL string) (*OpenAIProvider, error) {
 	if model == "" {
-		model = "gpt-4o-mini"
+		model = "gpt-5-mini"
 	}
 	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
 	if baseURL != "" {
@@ -33,6 +34,11 @@ func NewOpenAIProvider(apiKey, model, baseURL string) (*OpenAIProvider, error) {
 
 func (o *OpenAIProvider) Name() string  { return "openai" }
 func (o *OpenAIProvider) Model() string { return o.model }
+
+// tempFixed returns true for models that don't support custom temperature (e.g., gpt-5-mini, o1, o3).
+func (o *OpenAIProvider) tempFixed() bool {
+	return strings.HasPrefix(o.model, "gpt-5-mini") || strings.HasPrefix(o.model, "o1") || strings.HasPrefix(o.model, "o3")
+}
 
 var extractionSchema = map[string]interface{}{
 	"type": "object",
@@ -128,7 +134,7 @@ var extractionSchema = map[string]interface{}{
 func (o *OpenAIProvider) ExtractMemories(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error) {
 	prompt := FormatPrompt(req)
 
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a memory extraction system. Always respond with valid JSON only."),
@@ -143,8 +149,11 @@ func (o *OpenAIProvider) ExtractMemories(ctx context.Context, req ExtractionRequ
 				},
 			},
 		},
-		Temperature: openai.Float(0.2),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.2)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI completion failed: %w", err)
 	}
@@ -168,7 +177,7 @@ func (o *OpenAIProvider) ExtractMemories(ctx context.Context, req ExtractionRequ
 func (o *OpenAIProvider) ConsolidateMemories(ctx context.Context, req ConsolidationRequest) (*ConsolidationResponse, error) {
 	prompt := FormatConsolidationPrompt(req)
 
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a memory consolidation system. Always respond with valid JSON only."),
@@ -177,8 +186,11 @@ func (o *OpenAIProvider) ConsolidateMemories(ctx context.Context, req Consolidat
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		},
-		Temperature: openai.Float(0.3),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.3)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI consolidation failed: %w", err)
 	}
@@ -209,7 +221,7 @@ func (o *OpenAIProvider) ExtractWithSchema(ctx context.Context, req CustomExtrac
 		"additionalProperties": false,
 	}
 
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a data extraction system. Always respond with valid JSON only."),
@@ -224,8 +236,11 @@ func (o *OpenAIProvider) ExtractWithSchema(ctx context.Context, req CustomExtrac
 				},
 			},
 		},
-		Temperature: openai.Float(0.2),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.2)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI custom extraction failed: %w", err)
 	}
@@ -259,7 +274,7 @@ func (o *OpenAIProvider) ExtractState(ctx context.Context, req StateExtractionRe
 		"additionalProperties": false,
 	}
 
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a state extraction system for AI agent workflows. Always respond with valid JSON only."),
@@ -274,8 +289,11 @@ func (o *OpenAIProvider) ExtractState(ctx context.Context, req StateExtractionRe
 				},
 			},
 		},
-		Temperature: openai.Float(0.2),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.2)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI state extraction failed: %w", err)
 	}
@@ -308,7 +326,7 @@ func (o *OpenAIProvider) DetectConflict(ctx context.Context, req ConflictCheckRe
 		"additionalProperties": false,
 	}
 
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a memory conflict detection system. Always respond with valid JSON only."),
@@ -323,8 +341,11 @@ func (o *OpenAIProvider) DetectConflict(ctx context.Context, req ConflictCheckRe
 				},
 			},
 		},
-		Temperature: openai.Float(0.2),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.2)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI conflict check failed: %w", err)
 	}
@@ -355,7 +376,7 @@ func (o *OpenAIProvider) ReEvaluateImportance(ctx context.Context, req Importanc
 		"additionalProperties": false,
 	}
 
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a memory importance evaluation system. Always respond with valid JSON only."),
@@ -370,8 +391,11 @@ func (o *OpenAIProvider) ReEvaluateImportance(ctx context.Context, req Importanc
 				},
 			},
 		},
-		Temperature: openai.Float(0.2),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.2)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI importance re-eval failed: %w", err)
 	}
@@ -406,7 +430,7 @@ func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 	}
 
 	prompt := FormatActionPriorityPrompt(req)
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are an AI agent executive function that prioritizes actions."),
@@ -415,8 +439,11 @@ func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: prioritySchema},
 		},
-		Temperature: openai.Float(0.3),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.3)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI action priority failed: %w", err)
 	}
@@ -454,7 +481,7 @@ func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req Heartb
 	}
 
 	prompt := FormatHeartbeatAnalysisPrompt(req)
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are an AI agent's memory and planning system. Always respond with valid JSON only."),
@@ -463,8 +490,11 @@ func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req Heartb
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: analysisSchema},
 		},
-		Temperature: openai.Float(0.3),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.3)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI heartbeat analysis failed: %w", err)
 	}
@@ -497,7 +527,7 @@ func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 	}
 
 	prompt := FormatGraphSummaryPrompt(req)
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are a knowledge graph reasoning system."),
@@ -506,8 +536,11 @@ func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: graphSchema},
 		},
-		Temperature: openai.Float(0.3),
-	})
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.3)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI graph summary failed: %w", err)
 	}

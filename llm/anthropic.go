@@ -20,7 +20,7 @@ type AnthropicProvider struct {
 
 func NewAnthropicProvider(apiKey, model, baseURL string) (*AnthropicProvider, error) {
 	if model == "" {
-		model = "claude-3-5-haiku-latest"
+		model = "claude-haiku-4-5-20251001"
 	}
 	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
 	if baseURL != "" {
