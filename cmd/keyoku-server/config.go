@@ -54,9 +54,7 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 
 	// Environment variable overrides
-	if v := os.Getenv("KEYOKU_PORT"); v != "" {
-		// parsed below in main
-	}
+	// KEYOKU_PORT is parsed in main.go via flag override
 	if v := os.Getenv("KEYOKU_DB_PATH"); v != "" {
 		cfg.DBPath = v
 	}

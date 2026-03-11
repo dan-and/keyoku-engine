@@ -633,7 +633,7 @@ func TestSQLiteStore_EntityCRUD(t *testing.T) {
 	}
 
 	// Update
-	got, err = s.UpdateEntity(ctx, entity.ID, map[string]any{"description": "test person"})
+	_, err = s.UpdateEntity(ctx, entity.ID, map[string]any{"description": "test person"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +832,7 @@ func TestSQLiteStore_RelationshipCRUD(t *testing.T) {
 	}
 
 	// Update
-	got, err = s.UpdateRelationship(ctx, rel.ID, map[string]any{"strength": 0.95})
+	_, err = s.UpdateRelationship(ctx, rel.ID, map[string]any{"strength": 0.95})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1029,7 @@ func TestSQLiteStore_SchemaCRUD(t *testing.T) {
 	}
 
 	// Update
-	got, err = s.UpdateSchema(ctx, schema.ID, map[string]any{"description": "updated desc"})
+	_, err = s.UpdateSchema(ctx, schema.ID, map[string]any{"description": "updated desc"})
 	if err != nil {
 		t.Fatal(err)
 	}

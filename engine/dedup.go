@@ -191,7 +191,7 @@ func mergeContent(existing, newContent string) string {
 
 	commonPrefix := 0
 	for i := 0; i < len(existingWords) && i < len(newWords); i++ {
-		if strings.ToLower(existingWords[i]) == strings.ToLower(newWords[i]) {
+		if strings.EqualFold(existingWords[i], newWords[i]) {
 			commonPrefix = i + 1
 		} else {
 			break
@@ -209,6 +209,7 @@ func (d *DuplicateDetector) FindDuplicatesForConsolidation(ctx context.Context, 
 	if threshold <= 0 {
 		threshold = d.config.NearDuplicateThreshold
 	}
+	_ = threshold // TODO: use threshold in similarity comparison
 
 	query := storage.MemoryQuery{
 		EntityID: entityID,

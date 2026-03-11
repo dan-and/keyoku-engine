@@ -617,12 +617,12 @@ func FormatCustomExtractionPrompt(req CustomExtractionRequest) string {
 func FormatStateExtractionPrompt(req StateExtractionRequest) string {
 	schemaJSON, _ := json.MarshalIndent(req.Schema, "", "  ")
 	currentStateStr := "(No existing state - this is a new state)"
-	if req.CurrentState != nil && len(req.CurrentState) > 0 {
+	if len(req.CurrentState) > 0 {
 		stateJSON, _ := json.MarshalIndent(req.CurrentState, "", "  ")
 		currentStateStr = string(stateJSON)
 	}
 	transitionRulesStr := "(No transition rules defined - any state change is valid)"
-	if req.TransitionRules != nil && len(req.TransitionRules) > 0 {
+	if len(req.TransitionRules) > 0 {
 		rulesJSON, _ := json.MarshalIndent(req.TransitionRules, "", "  ")
 		transitionRulesStr = string(rulesJSON)
 	}
