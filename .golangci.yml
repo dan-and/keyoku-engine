@@ -1,0 +1,24 @@
+linters:
+  enable:
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  disable:
+    - errcheck
+
+linters-settings:
+  staticcheck:
+    checks:
+      - all
+      - '-SA4006'  # allow unused values in tests
+
+issues:
+  exclude-dirs:
+    - vendor
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - staticcheck
+      text: "SA4006"
