@@ -82,7 +82,7 @@ func TestCheckDuplicate_NearDuplicateMerge(t *testing.T) {
 	store := &mockStore{
 		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
 			return []*storage.SimilarityResult{
-				{Memory: existing, Similarity: 0.85},
+				{Memory: existing, Similarity: 0.80},
 			}, nil
 		},
 	}
@@ -226,14 +226,49 @@ func findStr(s, sub string) bool {
 
 func TestDefaultDuplicateConfig(t *testing.T) {
 	cfg := DefaultDuplicateConfig()
-	if cfg.SemanticThreshold != 0.90 {
-		t.Errorf("SemanticThreshold = %v, want 0.90", cfg.SemanticThreshold)
+	if cfg.SemanticThreshold != 0.85 {
+		t.Errorf("SemanticThreshold = %v, want 0.85", cfg.SemanticThreshold)
 	}
-	if cfg.NearDuplicateThreshold != 0.80 {
-		t.Errorf("NearDuplicateThreshold = %v, want 0.80", cfg.NearDuplicateThreshold)
+	if cfg.NearDuplicateThreshold != 0.75 {
+		t.Errorf("NearDuplicateThreshold = %v, want 0.75", cfg.NearDuplicateThreshold)
 	}
 	if !cfg.EnableSemanticDedup {
 		t.Error("EnableSemanticDedup should be true by default")
+	}
+}
+
+func TestFindDuplicatesForConsolidation_TooFewMemories(t *testing.T) {
+	store := &mockStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{testMemory("m1", "single memory")}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+	groups, err := d.FindDuplicatesForConsolidation(context.Background(), "entity-1", 0.8)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if groups != nil {
+		t.Errorf("expected nil groups for <2 memories, got %v", groups)
+	}
+}
+
+func TestFindDuplicatesForConsolidation_DefaultThreshold(t *testing.T) {
+	store := &mockStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				testMemory("m1", "memory one"),
+				testMemory("m2", "memory two"),
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+	groups, err := d.FindDuplicatesForConsolidation(context.Background(), "entity-1", 0)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(groups) != 0 {
+		t.Errorf("expected 0 groups from stub, got %d", len(groups))
 	}
 }
 

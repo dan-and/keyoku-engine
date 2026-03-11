@@ -49,7 +49,7 @@ func TestNewScorerWithMode_Weights(t *testing.T) {
 		{ModeImportant, 0.40, 0.10, 0.35},
 		{ModeHistorical, 0.50, 0.05, 0.15},
 		{ModeComprehensive, 0.45, 0.15, 0.20},
-		{ModeBalanced, 0.35, 0.25, 0.15},
+		{ModeBalanced, 0.35, 0.20, 0.20},
 	}
 
 	for _, tt := range tests {

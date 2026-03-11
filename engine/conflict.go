@@ -123,6 +123,15 @@ func (d *ConflictDetector) checkConflict(ctx context.Context, newContent string,
 		}
 	}
 
+	// Life transition patterns: location moves, job changes, status updates
+	if isLifeTransitionConflict(newContent, existing.Content) {
+		return &Conflict{
+			NewContent: newContent, ExistingMemory: existing,
+			ConflictType: ConflictTypeUpdate, Confidence: 0.75,
+			Resolution: ResolutionUseNew, Explanation: "life transition detected (location/job/status change)",
+		}
+	}
+
 	if existing.Type == storage.TypePreference && newType == storage.TypePreference {
 		if isSameSubject(newContent, existing.Content) {
 			return &Conflict{
@@ -234,6 +243,45 @@ func isTemporalConflict(newContent string, existing *storage.Memory) bool {
 			return true
 		}
 	}
+	return false
+}
+
+// isLifeTransitionConflict detects location moves, job changes, and status updates
+// that pattern matching and temporal detection miss because different verbs are used.
+// E.g., "I live in San Francisco" vs "I just moved to New York" — no negation, no shared
+// temporal indicator, but clearly a conflict on location.
+func isLifeTransitionConflict(newContent, existingContent string) bool {
+	newLower := strings.ToLower(newContent)
+	existLower := strings.ToLower(existingContent)
+
+	// Category keyword sets: if both contents match the same category, it's a conflict
+	categories := []struct {
+		name     string
+		keywords []string
+	}{
+		{"location", []string{"live in", "lives in", "living in", "moved to", "moving to", "relocated to", "based in", "reside in", "resides in", "residing in", "settled in", "home in", "from"}},
+		{"job", []string{"work at", "works at", "working at", "job at", "employed at", "joined", "hired at", "position at", "role at", "work for", "works for", "working for"}},
+		{"diet", []string{"drink", "drinks", "drinking", "eat", "eats", "eating", "coffee", "tea", "vegetarian", "vegan", "cups a day", "switched to"}},
+		{"status", []string{"married", "single", "divorced", "engaged", "dating", "relationship", "partner", "spouse", "wife", "husband", "girlfriend", "boyfriend"}},
+	}
+
+	for _, cat := range categories {
+		existMatch := false
+		newMatch := false
+		for _, kw := range cat.keywords {
+			if strings.Contains(existLower, kw) {
+				existMatch = true
+			}
+			if strings.Contains(newLower, kw) {
+				newMatch = true
+			}
+		}
+		if existMatch && newMatch {
+			// Both mention the same life category — likely a transition/update
+			return true
+		}
+	}
+
 	return false
 }
 

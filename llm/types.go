@@ -160,6 +160,14 @@ type HeartbeatAnalysisRequest struct {
 	Autonomy         string   // "observe", "suggest", or "act"
 	AgentID          string
 	EntityID         string
+
+	// Extended signals
+	GoalProgress      []string `json:"goal_progress,omitempty"`      // Goal progress descriptions
+	Continuity        string   `json:"continuity,omitempty"`         // Session continuity summary
+	SentimentTrend    string   `json:"sentiment_trend,omitempty"`    // Sentiment direction summary
+	RelationshipAlerts []string `json:"relationship_alerts,omitempty"` // Silent entity alerts
+	KnowledgeGaps     []string `json:"knowledge_gaps,omitempty"`     // Unanswered questions
+	BehavioralPatterns []string `json:"behavioral_patterns,omitempty"` // Day-of-week patterns
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.

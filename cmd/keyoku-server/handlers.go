@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -137,6 +138,48 @@ type heartbeatAnalysisJSON struct {
 	UserFacing         string   `json:"user_facing"`
 }
 
+type goalProgressJSON struct {
+	Plan       memoryJSON   `json:"plan"`
+	Activities []memoryJSON `json:"activities,omitempty"`
+	Progress   float64      `json:"progress"`
+	DaysLeft   float64      `json:"days_left"`
+	Status     string       `json:"status"`
+}
+
+type continuityJSON struct {
+	LastMemories     []memoryJSON `json:"last_memories,omitempty"`
+	SessionAgeHours  float64      `json:"session_age_hours"`
+	WasInterrupted   bool         `json:"was_interrupted"`
+	ResumeSuggestion string       `json:"resume_suggestion"`
+}
+
+type sentimentTrendJSON struct {
+	RecentAvg   float64      `json:"recent_avg"`
+	PreviousAvg float64      `json:"previous_avg"`
+	Direction   string       `json:"direction"`
+	Delta       float64      `json:"delta"`
+	Notable     []memoryJSON `json:"notable,omitempty"`
+}
+
+type relationshipAlertJSON struct {
+	EntityName   string       `json:"entity_name"`
+	DaysSilent   int          `json:"days_silent"`
+	RelatedPlans []memoryJSON `json:"related_plans,omitempty"`
+	Urgency      string       `json:"urgency"`
+}
+
+type knowledgeGapJSON struct {
+	Question string `json:"question"`
+	AskedAt  string `json:"asked_at"`
+}
+
+type behavioralPatternJSON struct {
+	Description string   `json:"description"`
+	Confidence  float64  `json:"confidence"`
+	DayOfWeek   *int     `json:"day_of_week,omitempty"`
+	Topics      []string `json:"topics,omitempty"`
+}
+
 type heartbeatContextResponse struct {
 	ShouldAct        bool                    `json:"should_act"`
 	Scheduled        []memoryJSON            `json:"scheduled"`
@@ -146,6 +189,14 @@ type heartbeatContextResponse struct {
 	RelevantMemories []searchResultItem      `json:"relevant_memories"`
 	Summary          string                  `json:"summary"`
 	Analysis         *heartbeatAnalysisJSON  `json:"analysis,omitempty"`
+
+	// Extended signals
+	GoalProgress       []goalProgressJSON      `json:"goal_progress,omitempty"`
+	Continuity         *continuityJSON         `json:"continuity,omitempty"`
+	SentimentTrend     *sentimentTrendJSON     `json:"sentiment_trend,omitempty"`
+	RelationshipAlerts []relationshipAlertJSON  `json:"relationship_alerts,omitempty"`
+	KnowledgeGaps      []knowledgeGapJSON      `json:"knowledge_gaps,omitempty"`
+	BehavioralPatterns []behavioralPatternJSON  `json:"behavioral_patterns,omitempty"`
 }
 
 type watcherStartRequest struct {
@@ -407,15 +458,9 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		req.MaxResults = 10
 	}
 
-	// 1. Heartbeat check — skip decay, focus on actionable signals
+	// 1. Heartbeat check — all signal types including extended checks
 	hbOpts := []keyoku.HeartbeatOption{
 		keyoku.WithMaxResults(req.MaxResults),
-		keyoku.WithChecks(
-			keyoku.CheckScheduled,
-			keyoku.CheckDeadlines,
-			keyoku.CheckPendingWork,
-			keyoku.CheckConflicts,
-		),
 	}
 	if req.DeadlineWindow != "" {
 		if d, err := time.ParseDuration(req.DeadlineWindow); err == nil {
@@ -481,6 +526,56 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		Summary:          hbResult.Summary,
 	}
 
+	// Populate extended signals
+	for _, g := range hbResult.GoalProgress {
+		resp.GoalProgress = append(resp.GoalProgress, goalProgressJSON{
+			Plan:       toMemoryJSON(g.Plan),
+			Activities: toMemoryJSONSlice(g.Activities),
+			Progress:   g.Progress,
+			DaysLeft:   g.DaysLeft,
+			Status:     g.Status,
+		})
+	}
+	if hbResult.Continuity != nil {
+		resp.Continuity = &continuityJSON{
+			LastMemories:     toMemoryJSONSlice(hbResult.Continuity.LastSessionMemories),
+			SessionAgeHours:  hbResult.Continuity.SessionAge.Hours(),
+			WasInterrupted:   hbResult.Continuity.WasInterrupted,
+			ResumeSuggestion: hbResult.Continuity.ResumeSuggestion,
+		}
+	}
+	if hbResult.Sentiment != nil {
+		resp.SentimentTrend = &sentimentTrendJSON{
+			RecentAvg:   hbResult.Sentiment.RecentAvg,
+			PreviousAvg: hbResult.Sentiment.PreviousAvg,
+			Direction:   hbResult.Sentiment.Direction,
+			Delta:       hbResult.Sentiment.Delta,
+			Notable:     toMemoryJSONSlice(hbResult.Sentiment.Notable),
+		}
+	}
+	for _, ra := range hbResult.Relationships {
+		resp.RelationshipAlerts = append(resp.RelationshipAlerts, relationshipAlertJSON{
+			EntityName:   ra.Entity.CanonicalName,
+			DaysSilent:   ra.DaysSilent,
+			RelatedPlans: toMemoryJSONSlice(ra.RelatedPlans),
+			Urgency:      ra.Urgency,
+		})
+	}
+	for _, kg := range hbResult.KnowledgeGaps {
+		resp.KnowledgeGaps = append(resp.KnowledgeGaps, knowledgeGapJSON{
+			Question: kg.Question,
+			AskedAt:  kg.AskedAt.Format(time.RFC3339),
+		})
+	}
+	for _, bp := range hbResult.Patterns {
+		resp.BehavioralPatterns = append(resp.BehavioralPatterns, behavioralPatternJSON{
+			Description: bp.Description,
+			Confidence:  bp.Confidence,
+			DayOfWeek:   bp.DayOfWeek,
+			Topics:      bp.Topics,
+		})
+	}
+
 	// 4. LLM analysis (if requested and provider available)
 	if req.Analyze {
 		provider := h.k.Provider()
@@ -512,21 +607,66 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				memoryStrs = append(memoryStrs, m.Memory.Content)
 			}
 
+			// Build extended signal strings for LLM
+			goalProgressStrs := make([]string, 0, len(hbResult.GoalProgress))
+			for _, g := range hbResult.GoalProgress {
+				daysStr := "no deadline"
+				if g.DaysLeft >= 0 {
+					daysStr = fmt.Sprintf("%.0f days left", g.DaysLeft)
+				}
+				goalProgressStrs = append(goalProgressStrs, fmt.Sprintf("%s (%.0f%% done, %s, status: %s)",
+					g.Plan.Content, g.Progress*100, daysStr, g.Status))
+			}
+
+			var continuityStr string
+			if hbResult.Continuity != nil && hbResult.Continuity.WasInterrupted {
+				continuityStr = fmt.Sprintf("%s (last active %.0f hours ago)",
+					hbResult.Continuity.ResumeSuggestion, hbResult.Continuity.SessionAge.Hours())
+			}
+
+			var sentimentStr string
+			if hbResult.Sentiment != nil {
+				sentimentStr = fmt.Sprintf("Trend: %s (recent avg: %.2f, previous avg: %.2f, delta: %.2f)",
+					hbResult.Sentiment.Direction, hbResult.Sentiment.RecentAvg, hbResult.Sentiment.PreviousAvg, hbResult.Sentiment.Delta)
+			}
+
+			relationshipStrs := make([]string, 0, len(hbResult.Relationships))
+			for _, ra := range hbResult.Relationships {
+				relationshipStrs = append(relationshipStrs, fmt.Sprintf("%s: silent for %d days [%s]",
+					ra.Entity.CanonicalName, ra.DaysSilent, ra.Urgency))
+			}
+
+			knowledgeStrs := make([]string, 0, len(hbResult.KnowledgeGaps))
+			for _, kg := range hbResult.KnowledgeGaps {
+				knowledgeStrs = append(knowledgeStrs, kg.Question)
+			}
+
+			patternStrs := make([]string, 0, len(hbResult.Patterns))
+			for _, bp := range hbResult.Patterns {
+				patternStrs = append(patternStrs, fmt.Sprintf("%s (confidence: %.0f%%)", bp.Description, bp.Confidence*100))
+			}
+
 			activitySummary := req.ActivitySummary
 			if activitySummary == "" {
 				activitySummary = req.Query // fall back to query
 			}
 
 			analysisResult, err := provider.AnalyzeHeartbeatContext(r.Context(), keyoku.HeartbeatAnalysisRequest{
-				ActivitySummary:  activitySummary,
-				Scheduled:        scheduled,
-				Deadlines:        deadlines,
-				PendingWork:      pendingWork,
-				Conflicts:        conflictStrs,
-				RelevantMemories: memoryStrs,
-				Autonomy:         autonomy,
-				AgentID:          req.AgentID,
-				EntityID:         req.EntityID,
+				ActivitySummary:    activitySummary,
+				Scheduled:          scheduled,
+				Deadlines:          deadlines,
+				PendingWork:        pendingWork,
+				Conflicts:          conflictStrs,
+				RelevantMemories:   memoryStrs,
+				Autonomy:           autonomy,
+				AgentID:            req.AgentID,
+				EntityID:           req.EntityID,
+				GoalProgress:       goalProgressStrs,
+				Continuity:         continuityStr,
+				SentimentTrend:     sentimentStr,
+				RelationshipAlerts: relationshipStrs,
+				KnowledgeGaps:      knowledgeStrs,
+				BehavioralPatterns: patternStrs,
 			})
 			if err == nil {
 				resp.Analysis = &heartbeatAnalysisJSON{

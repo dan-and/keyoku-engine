@@ -82,6 +82,8 @@ type mockStore struct {
 	updateAgentStateFn               func(context.Context, string, map[string]any) error
 	getAgentStateHistoryFn           func(context.Context, string, int) ([]*storage.AgentStateHistory, error)
 	logAgentStateHistoryFn           func(context.Context, *storage.AgentStateHistory) error
+	aggregateStatsFn                 func(context.Context, string) (*storage.AggregatedStats, error)
+	sampleMemoriesFn                 func(context.Context, string, int) ([]*storage.Memory, error)
 	closeFn                          func() error
 	pingFn                           func(context.Context) error
 }
@@ -499,8 +501,18 @@ func (m *mockStore) LogAgentStateHistory(ctx context.Context, history *storage.A
 	}
 	return nil
 }
-func (m *mockStore) AggregateStats(_ context.Context, _ string) (*storage.AggregatedStats, error) { return &storage.AggregatedStats{ByType: map[string]int{}, ByState: map[string]int{}}, nil }
-func (m *mockStore) SampleMemories(_ context.Context, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) AggregateStats(ctx context.Context, entityID string) (*storage.AggregatedStats, error) {
+	if m.aggregateStatsFn != nil {
+		return m.aggregateStatsFn(ctx, entityID)
+	}
+	return &storage.AggregatedStats{ByType: map[string]int{}, ByState: map[string]int{}}, nil
+}
+func (m *mockStore) SampleMemories(ctx context.Context, entityID string, limit int) ([]*storage.Memory, error) {
+	if m.sampleMemoriesFn != nil {
+		return m.sampleMemoriesFn(ctx, entityID, limit)
+	}
+	return nil, nil
+}
 func (m *mockStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *mockStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, _ int, _ storage.SimilarityOptions) ([]*storage.Memory, error) { return nil, nil }
 func (m *mockStore) GetHNSWIndexSize() int {

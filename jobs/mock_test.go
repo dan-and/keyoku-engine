@@ -314,6 +314,9 @@ func (m *mockProvider) ReEvaluateImportance(_ context.Context, _ llm.ImportanceR
 func (m *mockProvider) PrioritizeActions(_ context.Context, _ llm.ActionPriorityRequest) (*llm.ActionPriorityResponse, error) {
 	return &llm.ActionPriorityResponse{}, nil
 }
+func (m *mockProvider) AnalyzeHeartbeatContext(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+	return &llm.HeartbeatAnalysisResponse{}, nil
+}
 func (m *mockProvider) SummarizeGraph(_ context.Context, _ llm.GraphSummaryRequest) (*llm.GraphSummaryResponse, error) {
 	return &llm.GraphSummaryResponse{}, nil
 }

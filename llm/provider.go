@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Provider is the interface that all LLM providers must implement.
@@ -133,8 +134,15 @@ Extract relationships between entities:
 5. Check if this UPDATES or CONTRADICTS existing memories
    - If user says "actually" or "changed my mind" → suggest UPDATE/DELETE
    - Reference the context to understand corrections
-6. Normalize content to third person ("User works at..." not "I work at...")
-7. Extract entities and relationships mentioned in the input
+6. Normalize content to third person AND prefix with the category keyword so memories are findable by topic:
+   - IDENTITY: Start with "User's name is...", "User's age is...", "User's occupation is...", "User lives in..."
+   - PREFERENCE: Start with "User prefers...", "User likes...", "User dislikes..."
+   - RELATIONSHIP: Start with "User's [relation] is...", "User knows..."
+   - PLAN: Start with "User plans to...", "User intends to...", "User's future plan is..."
+   - EVENT: Start with "User attended...", "User experienced..."
+   - ACTIVITY: Start with "User is currently...", "User is learning..."
+   Examples: "My name is Marcus" → "User's name is Marcus", "I work at Google" → "User works at Google"
+7. ALWAYS extract entities and relationships mentioned in the input — every person, organization, and location MUST appear in the entities array, and every relationship between them MUST appear in the relationships array. Do NOT skip this step.
 
 ## INPUT (Current message to process)
 %s
@@ -381,11 +389,33 @@ const heartbeatAnalysisPrompt = `You are an AI agent's memory and planning syste
 ### Relevant Memories
 %s
 
+### Goal Progress
+%s
+
+### Session Continuity
+%s
+
+### Sentiment Trends
+%s
+
+### Relationship Alerts
+%s
+
+### Behavioral Patterns (today: %s)
+%s
+
+### Knowledge Gaps
+%s
+
 ## Instructions
-Cross-reference the agent's current activity with all signals. Determine:
-1. Which signals are relevant to what the agent is currently doing?
-2. What needs immediate attention vs what can wait?
-3. Are there conflicts between current work and stored memories?
+Cross-reference the agent's current activity with ALL signals. You are a fully autonomous personal assistant — think holistically:
+
+1. **Task & Goal Signals**: Which scheduled tasks, deadlines, and pending work are relevant right now? Cross-reference goal progress with current activity — if a goal is at risk or stalled, prioritize it.
+2. **Session Continuity**: If the user was interrupted mid-task, suggest resuming where they left off.
+3. **Emotional Context**: Adjust tone based on sentiment trends. If the user seems frustrated, be more supportive. If improving, acknowledge progress.
+4. **Relationships**: Proactively remind about silent stakeholders near deadlines. If someone hasn't been mentioned and a deadline approaches, flag it.
+5. **Behavioral Patterns**: Use patterns for anticipatory suggestions. If the user usually does X on this day, proactively set up context.
+6. **Knowledge Gaps**: Surface unanswered questions as clarifying prompts.
 
 Tailor your response to the autonomy level:
 - observe: action_brief = observations, user_facing = "FYI: ..." informational notes
@@ -394,7 +424,7 @@ Tailor your response to the autonomy level:
 
 Return JSON with: should_act (bool), action_brief (string), recommended_actions (array of strings), urgency (one of: none, low, medium, high, critical), reasoning (string), autonomy (echo back the level), user_facing (string message for the user).
 
-If nothing needs attention, set should_act to false, urgency to "none", and user_facing to a brief "all clear" note.`
+CRITICAL: Only surface real, concrete signals. If all signal sections above are empty or say "none", set should_act to false, urgency to "none", action_brief to "", recommended_actions to [], and user_facing to "". Do NOT fabricate generic suggestions like "check in about projects" or "review long-term goals" when there is no data to back them up. Empty signals = empty response. The agent will handle the "nothing to report" case itself.`
 
 // FormatHeartbeatAnalysisPrompt formats the heartbeat analysis prompt.
 func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
@@ -418,6 +448,15 @@ func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
 		return result
 	}
 
+	formatSingle := func(s string) string {
+		if s == "" {
+			return "(none)"
+		}
+		return s
+	}
+
+	today := time.Now().Weekday().String()
+
 	return fmt.Sprintf(heartbeatAnalysisPrompt,
 		autonomy,
 		activity,
@@ -426,6 +465,13 @@ func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
 		formatList(req.PendingWork),
 		formatList(req.Conflicts),
 		formatList(req.RelevantMemories),
+		formatList(req.GoalProgress),
+		formatSingle(req.Continuity),
+		formatSingle(req.SentimentTrend),
+		formatList(req.RelationshipAlerts),
+		today,
+		formatList(req.BehavioralPatterns),
+		formatList(req.KnowledgeGaps),
 	)
 }
 

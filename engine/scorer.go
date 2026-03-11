@@ -43,7 +43,10 @@ func NewScorerWithMode(mode ScorerMode) *Scorer {
 	case ModeComprehensive:
 		return &Scorer{0.45, 0.15, 0.15, 0.20, 0.05}
 	default:
-		return &Scorer{0.35, 0.25, 0.20, 0.15, 0.05}
+		// Balanced: increased importance weight (0.15→0.20) so identity/critical memories
+		// rank higher, reduced recency weight (0.25→0.20) since persistent facts matter
+		// more than recency for recall queries like "what's the user's name"
+		return &Scorer{0.35, 0.20, 0.20, 0.20, 0.05}
 	}
 }
 

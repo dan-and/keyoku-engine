@@ -295,6 +295,80 @@ func TestDeduplicateEntities(t *testing.T) {
 	}
 }
 
+func TestExtractEntities_FullPipeline(t *testing.T) {
+	store := &mockStore{}
+	r := NewEntityResolver(store, &mockEmbedder{dimensions: 3}, DefaultEntityConfig())
+
+	entities, err := r.ExtractEntities(context.Background(), "My friend Alice works at Google in London")
+	if err != nil {
+		t.Fatalf("ExtractEntities: %v", err)
+	}
+	if len(entities) < 2 {
+		t.Errorf("expected at least 2 entities, got %d: %v", len(entities), entities)
+	}
+	names := make(map[string]bool)
+	for _, e := range entities {
+		names[e.Name] = true
+	}
+	if !names["Alice"] {
+		t.Error("expected to find entity 'Alice'")
+	}
+	if !names["Google"] {
+		t.Error("expected to find entity 'Google'")
+	}
+}
+
+func TestExtractEntities_QuotedNames(t *testing.T) {
+	store := &mockStore{}
+	r := NewEntityResolver(store, &mockEmbedder{dimensions: 3}, DefaultEntityConfig())
+
+	entities, err := r.ExtractEntities(context.Background(), `He mentioned "Project Alpha" and "Team Beta"`)
+	if err != nil {
+		t.Fatalf("ExtractEntities: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, e := range entities {
+		names[e.Name] = true
+	}
+	if !names["Project Alpha"] {
+		t.Error("expected to find 'Project Alpha'")
+	}
+	if !names["Team Beta"] {
+		t.Error("expected to find 'Team Beta'")
+	}
+}
+
+func TestExtractRelationshipEntities(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantName string
+		wantType storage.EntityType
+	}{
+		{"my friend Bob went home", "Bob", storage.EntityTypePerson},
+		{"works at Google every day", "Google", storage.EntityTypeOrganization},
+		{"lives in Boston nowadays", "Boston", storage.EntityTypeLocation},
+		{"married to Alice forever", "Alice", storage.EntityTypePerson},
+		{"the boss Charlie approved it", "Charlie", storage.EntityTypePerson},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			entities := extractRelationshipEntities(tt.input)
+			found := false
+			for _, e := range entities {
+				if e.Name == tt.wantName && e.Type == tt.wantType {
+					found = true
+					if e.Confidence != 0.85 {
+						t.Errorf("confidence = %v, want 0.85", e.Confidence)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("expected entity %q (%s) not found in %v", tt.wantName, tt.wantType, entities)
+			}
+		})
+	}
+}
+
 func TestContains(t *testing.T) {
 	if !contains([]string{"a", "b", "c"}, "b") {
 		t.Error("expected true")

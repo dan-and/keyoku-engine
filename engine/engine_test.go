@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/keyoku-ai/keyoku-engine/llm"
@@ -759,5 +760,95 @@ func TestEngine_Add_Concurrent(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Errorf("concurrent Add error: %v", err)
 		}
+	}
+}
+
+func TestEngine_SetEmitter(t *testing.T) {
+	store := &mockStore{}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{{Content: "test fact", Type: "context", Importance: 0.5, Confidence: 0.8}},
+			}, nil
+		},
+	}
+	emb := &mockEmbedder{dimensions: 3}
+	cfg := DefaultEngineConfig()
+	cfg.Significance = &SignificanceConfig{Enabled: false}
+	e := NewEngine(provider, emb, store, cfg)
+
+	var emitted string
+	e.SetEmitter(func(eventType, _, _, _ string, _ map[string]any) {
+		if emitted == "" {
+			emitted = eventType
+		}
+	})
+
+	_, err := e.Add(context.Background(), "e1", AddRequest{Content: "test fact about something important"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if emitted != "memory.created" {
+		t.Errorf("expected emitted event 'memory.created', got %q", emitted)
+	}
+}
+
+func TestEngine_Accessors(t *testing.T) {
+	store := &mockStore{}
+	e := NewEngine(&mockProvider{}, &mockEmbedder{dimensions: 3}, store, DefaultEngineConfig())
+
+	if e.Graph() == nil {
+		t.Error("Graph() should not be nil")
+	}
+	if e.Retriever() == nil {
+		t.Error("Retriever() should not be nil")
+	}
+	if e.TokenBudget() == nil {
+		t.Error("TokenBudget() should not be nil")
+	}
+	if e.Provider() == nil {
+		t.Error("Provider() should not be nil")
+	}
+}
+
+func TestEngine_GetGlobalStats(t *testing.T) {
+	store := &mockStore{
+		aggregateStatsFn: func(_ context.Context, entityID string) (*storage.AggregatedStats, error) {
+			return &storage.AggregatedStats{
+				TotalMemories: 42,
+				ByType:        map[string]int{"context": 30, "identity": 12},
+				ByState:       map[string]int{"active": 40, "stale": 2},
+			}, nil
+		},
+	}
+	e := NewEngine(&mockProvider{}, &mockEmbedder{dimensions: 3}, store, DefaultEngineConfig())
+
+	stats, err := e.GetGlobalStats(context.Background(), "e1")
+	if err != nil {
+		t.Fatalf("GetGlobalStats: %v", err)
+	}
+	if stats.TotalMemories != 42 {
+		t.Errorf("TotalMemories = %d, want 42", stats.TotalMemories)
+	}
+}
+
+func TestEngine_GetSampleMemories(t *testing.T) {
+	store := &mockStore{
+		sampleMemoriesFn: func(_ context.Context, _ string, limit int) ([]*storage.Memory, error) {
+			result := make([]*storage.Memory, limit)
+			for i := range result {
+				result[i] = testMemory(fmt.Sprintf("mem-%d", i), fmt.Sprintf("sample %d", i))
+			}
+			return result, nil
+		},
+	}
+	e := NewEngine(&mockProvider{}, &mockEmbedder{dimensions: 3}, store, DefaultEngineConfig())
+
+	mems, err := e.GetSampleMemories(context.Background(), "e1", 5)
+	if err != nil {
+		t.Fatalf("GetSampleMemories: %v", err)
+	}
+	if len(mems) != 5 {
+		t.Errorf("len = %d, want 5", len(mems))
 	}
 }

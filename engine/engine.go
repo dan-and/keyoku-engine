@@ -641,6 +641,8 @@ type QueryResult struct {
 }
 
 // Query retrieves memories relevant to a query.
+// Uses hybrid retrieval: HNSW embedding search + FTS keyword fallback,
+// then fuses results with reciprocal rank fusion for better recall.
 func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) ([]*QueryResult, error) {
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -685,8 +687,11 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 		return nil, fmt.Errorf("similarity search failed: %w", err)
 	}
 
+	// Build result set from HNSW candidates
+	seenIDs := make(map[string]bool, len(candidates))
 	results := make([]*QueryResult, 0, len(candidates))
 	for _, c := range candidates {
+		seenIDs[c.Memory.ID] = true
 		score := scorer.Score(ScoringInput{
 			Similarity:     c.Similarity,
 			CreatedAt:      c.Memory.CreatedAt,
@@ -700,6 +705,49 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 			Memory: c.Memory,
 			Score:  score,
 		})
+	}
+
+	// Hybrid retrieval: FTS keyword fallback to catch memories that embedding misses.
+	// Uses query expansion to generate multiple FTS queries from the original query.
+	// E.g., "user's name" → also searches "name", "called", which match memories
+	// containing "User's name is Marcus Chen".
+	ftsQueries := expandQueryForFTS(req.Query)
+	for _, ftsQuery := range ftsQueries {
+		ftsResults, ftsErr := e.store.SearchFTSWithOptions(ctx, ftsQuery, entityID, candidateCount, opts)
+		if ftsErr != nil || len(ftsResults) == 0 {
+			continue
+		}
+		for _, mem := range ftsResults {
+			if seenIDs[mem.ID] {
+				continue
+			}
+			seenIDs[mem.ID] = true
+			// FTS results get a baseline similarity of 0.4 (above minScore but below strong HNSW matches)
+			score := scorer.Score(ScoringInput{
+				Similarity:     0.4,
+				CreatedAt:      mem.CreatedAt,
+				LastAccessedAt: mem.LastAccessedAt,
+				Stability:      mem.Stability,
+				Importance:     mem.Importance,
+				Confidence:     mem.Confidence,
+				AccessCount:    mem.AccessCount,
+			})
+			results = append(results, &QueryResult{
+				Memory: mem,
+				Score:  score,
+			})
+		}
+	}
+
+	// Type-aware scoring: boost memories whose type matches the query intent.
+	// E.g., "user's name" → boost IDENTITY, "future plans" → boost PLAN.
+	queryType := detectQueryType(req.Query)
+	if queryType != "" {
+		for _, r := range results {
+			if string(r.Memory.Type) == queryType {
+				r.Score.TotalScore += 0.05 // small boost to prioritize matching types
+			}
+		}
 	}
 
 	sortResultsByScore(results)
