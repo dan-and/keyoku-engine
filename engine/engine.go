@@ -309,7 +309,7 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 
 	// Store the conversation turn
 	turnNumber := len(contextMsgs) + 1
-	e.store.AddSessionMessage(ctx, &storage.SessionMessage{
+	e.store.AddSessionMessage(ctx, &storage.SessionMessage{ //nolint:errcheck // fire-and-forget
 		EntityID:   entityID,
 		SessionID:  req.SessionID,
 		Role:       "user",
@@ -394,10 +394,10 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		case ResolutionUseNew:
 			if conflict.ExistingMemory != nil {
 				archivedState := storage.StateArchived
-				e.store.UpdateMemory(ctx, conflict.ExistingMemory.ID, storage.MemoryUpdate{
+				e.store.UpdateMemory(ctx, conflict.ExistingMemory.ID, storage.MemoryUpdate{ //nolint:errcheck // fire-and-forget
 					State: &archivedState,
 				})
-				e.store.LogHistory(ctx, &storage.HistoryEntry{
+				e.store.LogHistory(ctx, &storage.HistoryEntry{ //nolint:errcheck // fire-and-forget
 					MemoryID:  conflict.ExistingMemory.ID,
 					Operation: "superseded",
 					Changes: map[string]any{

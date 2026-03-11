@@ -908,8 +908,8 @@ func TestSQLiteStore_GetRelationshipPath(t *testing.T) {
 	s.CreateEntity(ctx, e3)
 
 	// A -> B -> C
-	s.CreateRelationship(ctx, &Relationship{OwnerEntityID: "user-1", SourceEntityID: e1.ID, TargetEntityID: e2.ID, RelationshipType: "knows", Strength: 0.5, Confidence: 0.5, Attributes: JSONMap{}})
-	s.CreateRelationship(ctx, &Relationship{OwnerEntityID: "user-1", SourceEntityID: e2.ID, TargetEntityID: e3.ID, RelationshipType: "knows", Strength: 0.5, Confidence: 0.5, Attributes: JSONMap{}})
+	_ = s.CreateRelationship(ctx, &Relationship{OwnerEntityID: "user-1", SourceEntityID: e1.ID, TargetEntityID: e2.ID, RelationshipType: "knows", Strength: 0.5, Confidence: 0.5, Attributes: JSONMap{}})
+	_ = s.CreateRelationship(ctx, &Relationship{OwnerEntityID: "user-1", SourceEntityID: e2.ID, TargetEntityID: e3.ID, RelationshipType: "knows", Strength: 0.5, Confidence: 0.5, Attributes: JSONMap{}})
 
 	// Direct
 	path, err := s.GetRelationshipPath(ctx, "user-1", e1.ID, e2.ID, 5)
@@ -1035,7 +1035,7 @@ func TestSQLiteStore_SchemaCRUD(t *testing.T) {
 	}
 
 	// Update is_active
-	got, err = s.UpdateSchema(ctx, schema.ID, map[string]any{"is_active": false})
+	_, err = s.UpdateSchema(ctx, schema.ID, map[string]any{"is_active": false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1073,7 +1073,7 @@ func TestSQLiteStore_CustomExtractionCRUD(t *testing.T) {
 		SchemaDefinition: map[string]any{"type": "object"},
 		IsActive:         true,
 	}
-	s.CreateSchema(ctx, schema)
+	_ = s.CreateSchema(ctx, schema)
 
 	// Create memory
 	mem := testMemory("user-1")
@@ -1145,10 +1145,10 @@ func TestSQLiteStore_DeleteCustomExtractionsBySchema(t *testing.T) {
 		SchemaDefinition: map[string]any{},
 		IsActive:         true,
 	}
-	s.CreateSchema(ctx, schema)
+	_ = s.CreateSchema(ctx, schema)
 
 	for i := 0; i < 3; i++ {
-		s.CreateCustomExtraction(ctx, &CustomExtraction{
+		_ = s.CreateCustomExtraction(ctx, &CustomExtraction{
 			EntityID:      "user-1",
 			SchemaID:      schema.ID,
 			ExtractedData: map[string]any{},

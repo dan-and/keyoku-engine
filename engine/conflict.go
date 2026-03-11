@@ -447,7 +447,7 @@ func (d *ConflictDetector) ResolveConflict(ctx context.Context, conflict Conflic
 		if err != nil {
 			return fmt.Errorf("failed to update memory: %w", err)
 		}
-		d.store.LogHistory(ctx, &storage.HistoryEntry{
+		d.store.LogHistory(ctx, &storage.HistoryEntry{ //nolint:errcheck // fire-and-forget logging
 			MemoryID: conflict.ExistingMemory.ID, Operation: "conflict_resolution",
 			Changes: map[string]any{
 				"conflict_type": conflict.ConflictType,
@@ -468,7 +468,7 @@ func (d *ConflictDetector) ResolveConflict(ctx context.Context, conflict Conflic
 		if err != nil {
 			return fmt.Errorf("failed to merge memories: %w", err)
 		}
-		d.store.LogHistory(ctx, &storage.HistoryEntry{
+		d.store.LogHistory(ctx, &storage.HistoryEntry{ //nolint:errcheck // fire-and-forget logging
 			MemoryID: conflict.ExistingMemory.ID, Operation: "conflict_merge",
 			Changes: map[string]any{"conflict_type": conflict.ConflictType, "merged_content": mergedContent},
 			Reason: "merged conflicting information",

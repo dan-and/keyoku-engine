@@ -161,7 +161,7 @@ func (d *DuplicateDetector) MergeMemories(ctx context.Context, existing *storage
 		updated.DerivedFrom = append(updated.DerivedFrom, existing.ID)
 	}
 
-	d.store.LogHistory(ctx, &storage.HistoryEntry{
+	d.store.LogHistory(ctx, &storage.HistoryEntry{ //nolint:errcheck // fire-and-forget logging
 		MemoryID:  existing.ID,
 		Operation: "merge",
 		Changes: map[string]any{
