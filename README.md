@@ -290,10 +290,26 @@ explanation, _ := k.Graph().ExplainConnection(ctx, "owner-id", aliceID, bobID)
 
 ## LLM Providers
 
-| Provider | Extraction Model | Embedding | Custom Base URL |
-|----------|-----------------|-----------|-----------------|
-| OpenAI | gpt-5-mini (default) | text-embedding-3-small | Yes |
-| Google Gemini | gemini-2.5-flash | gemini-embedding-001 | — |
+### Extraction Models
+
+| Provider | Model | Notes |
+|----------|-------|-------|
+| Google Gemini | **gemini-3.1-flash-lite-preview** (recommended) | Cheapest and fastest, near-perfect quality |
+| Google Gemini | gemini-2.5-flash | Thinking model, highest accuracy, slower |
+| OpenAI | gpt-4.1-mini | Balanced speed and quality |
+| OpenAI | gpt-4.1-nano | Cheapest OpenAI, slightly less reliable on complex schemas |
+| Anthropic | claude-haiku-4-5-20251001 | Fast, top-tier quality |
+
+### Embedding Models
+
+| Provider | Model | Notes |
+|----------|-------|-------|
+| Google Gemini | gemini-embedding-001 | Default — included with Gemini API key |
+| OpenAI | text-embedding-3-small | Default — included with OpenAI API key |
+
+> **Note:** Anthropic does not offer embedding models. If you use Anthropic for extraction, pair it with Gemini or OpenAI for embeddings.
+
+More models are being benchmarked and will be added in upcoming releases.
 
 Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 
@@ -302,10 +318,10 @@ Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 ```go
 keyoku.Config{
     DBPath:             "./keyoku.db",
-    ExtractionProvider: "openai",        // "openai", "google"
-    ExtractionModel:    "gpt-5-mini",
-    OpenAIAPIKey:       "sk-...",
-    EmbeddingModel:     "text-embedding-3-small",
+    ExtractionProvider: "google",        // "openai", "google", "anthropic"
+    ExtractionModel:    "gemini-3.1-flash-lite-preview",
+    GeminiAPIKey:       "AI...",
+    EmbeddingModel:     "gemini-embedding-001",
 
     // Deduplication
     DeduplicationEnabled:    true,

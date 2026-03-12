@@ -125,12 +125,7 @@ func newAgentStressHarness(t *testing.T) *agentStressHarness {
 func newAgentStressHarnessWithProvider(t *testing.T, provider llm.Provider, providerName string) *agentStressHarness {
 	t.Helper()
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		t.Fatal("OPENAI_API_KEY required for embeddings")
-	}
-
-	emb := embedder.NewOpenAI(apiKey, "text-embedding-3-small")
+	emb := initEmbedder(t)
 	return newAgentStressHarnessWithStack(t, provider, providerName, emb, false)
 }
 

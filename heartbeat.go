@@ -62,6 +62,9 @@ type HeartbeatResult struct {
 
 	// Team heartbeat fields (populated only in team heartbeat mode)
 	ByAgent map[string]*AgentHeartbeatSummary // per-agent breakdown (team mode only)
+
+	// Internal: unfiltered goal progress for snapshot delta detection (includes no_activity)
+	allGoalProgress []GoalProgressItem `json:"-"`
 }
 
 // StateSnapshot captures key metrics at a point in time for delta detection.
@@ -726,6 +729,9 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			}
 		}
 
+		// Preserve all goals for delta detection snapshot (includes no_activity)
+		result.allGoalProgress = append([]GoalProgressItem{}, result.GoalProgress...)
+
 		// Filter out no_activity goals — they're noise, not signals
 		var filteredGoals []GoalProgressItem
 		for _, g := range result.GoalProgress {
@@ -1151,8 +1157,18 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	// 7. Get last "act" decision
 	lastAct, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
 
-	// 8. Immediate tier always passes
+	// 8. Immediate tier bypasses cooldown but still checks novelty.
+	// If the exact same signals were acted on recently (within 30 min), suppress to prevent spam.
 	if highestTier == TierImmediate {
+		if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
+			immediateStaleCooldown := 30 * time.Minute
+			if time.Since(lastAct.ActedAt) < immediateStaleCooldown {
+				result.ShouldAct = false
+				result.DecisionReason = "suppress_stale"
+				k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_stale", highestTier, totalSignals)
+				return
+			}
+		}
 		result.ShouldAct = true
 		result.DecisionReason = "act"
 		k.finalizeAct(ctx, entityID, agentID, cfg, result, highestTier)
@@ -1174,7 +1190,8 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	multiplier := responseCooldownMultiplier(responseRate)
 
 	// 11. Cooldown check (with response rate multiplier)
-	if err == nil && lastAct != nil {
+	// Immediate tier bypasses cooldown entirely — these are time-sensitive (deadlines, scheduled).
+	if err == nil && lastAct != nil && highestTier != TierImmediate {
 		cooldown := params.SignalCooldownNormal
 		if highestTier == TierLow {
 			cooldown = params.SignalCooldownLow
@@ -1856,7 +1873,12 @@ func buildStateSnapshot(result *HeartbeatResult) StateSnapshot {
 		GoalStatuses:         make(map[string]string),
 		RelationshipSilences: make(map[string]int),
 	}
-	for _, g := range result.GoalProgress {
+	// Use unfiltered goals (includes no_activity) so delta detection works across transitions
+	goals := result.allGoalProgress
+	if len(goals) == 0 {
+		goals = result.GoalProgress
+	}
+	for _, g := range goals {
 		snap.GoalStatuses[g.Plan.ID] = g.Status
 	}
 	for _, r := range result.Relationships {

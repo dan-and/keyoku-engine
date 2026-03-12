@@ -188,27 +188,39 @@ func newHeartbeatStressHarness(t *testing.T) *heartbeatStressHarness {
 
 	provider, providerName := hbInitLLMProvider(t)
 
+	// Initialize embedder: prefer Gemini, fall back to OpenAI
+	var emb embedder.Embedder
+	var embeddingModel string
 	openaiKey := os.Getenv("OPENAI_API_KEY")
-	if openaiKey == "" {
-		t.Fatal("OPENAI_API_KEY required for embeddings")
-	}
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 
-	emb := embedder.NewOpenAI(openaiKey, "text-embedding-3-small")
+	if geminiKey != "" {
+		var err error
+		emb, err = embedder.NewGemini(geminiKey, "gemini-embedding-001")
+		if err != nil {
+			t.Fatalf("failed to create Gemini embedder: %v", err)
+		}
+		embeddingModel = "gemini-embedding-001"
+		t.Log("  using Gemini embeddings")
+	} else if openaiKey != "" {
+		emb = embedder.NewOpenAI(openaiKey, "text-embedding-3-small")
+		embeddingModel = "text-embedding-3-small"
+		t.Log("  using OpenAI embeddings")
+	} else {
+		t.Fatal("GEMINI_API_KEY or OPENAI_API_KEY required for embeddings")
+	}
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "heartbeat_stress.db")
 
 	// Determine extraction provider config for New()
 	extractionProvider := "google"
-	var geminiKey, anthropicKey string
 	switch providerName {
-	case "gemini":
-		geminiKey = os.Getenv("GEMINI_API_KEY")
 	case "openai":
 		extractionProvider = "openai"
 	case "anthropic":
 		extractionProvider = "anthropic"
-		anthropicKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
 
 	k, err := New(Config{
@@ -217,7 +229,7 @@ func newHeartbeatStressHarness(t *testing.T) *heartbeatStressHarness {
 		GeminiAPIKey:       geminiKey,
 		OpenAIAPIKey:       openaiKey,
 		AnthropicAPIKey:    anthropicKey,
-		EmbeddingModel:     "text-embedding-3-small",
+		EmbeddingModel:     embeddingModel,
 		SchedulerEnabled:   false, // disable background jobs for test determinism
 	})
 	if err != nil {

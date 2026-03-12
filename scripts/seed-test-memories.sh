@@ -2,18 +2,21 @@
 # Seed test memories for heartbeat scenario testing.
 # Each scenario targets a specific heartbeat signal path.
 #
-# Usage: ./scripts/seed-test-memories.sh [scenario] [entity_id] [base_url]
+# Usage: ./scripts/seed-test-memories.sh [scenario] [entity_id] [base_url] [auth_token]
 #   scenario   "all" (default), or one of: pending, deadline, scheduled, conflict,
 #              continuity, sentiment, knowledge, first-contact, goal-progress, quiet
 #   entity_id  defaults to "test-user"
 #   base_url   defaults to "http://localhost:8100"
+#   auth_token optional Bearer token for authenticated endpoints
 
 set -euo pipefail
 
 SCENARIO="${1:-all}"
 ENTITY_ID="${2:-test-user}"
 BASE_URL="${3:-http://localhost:8100}"
-AGENT_ID="kumo"
+AGENT_ID="${KEYOKU_AGENT_ID:-kumo}"
+
+AUTH_TOKEN="${4:-}"
 
 # Helpers
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -29,9 +32,16 @@ seed() {
   local data="$2"
   echo "  Seeding: $label"
   local resp
-  resp=$(curl -s -X POST "$BASE_URL/api/v1/seed" \
-    -H "Content-Type: application/json" \
-    -d "$data")
+  if [ -n "$AUTH_TOKEN" ]; then
+    resp=$(curl -s -X POST "$BASE_URL/api/v1/seed" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $AUTH_TOKEN" \
+      -d "$data")
+  else
+    resp=$(curl -s -X POST "$BASE_URL/api/v1/seed" \
+      -H "Content-Type: application/json" \
+      -d "$data")
+  fi
   echo "    → $resp"
 }
 

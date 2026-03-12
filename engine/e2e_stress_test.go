@@ -91,18 +91,12 @@ type e2eHarness struct {
 func newE2EHarness(t *testing.T) *e2eHarness {
 	t.Helper()
 
-	// Get API key
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		t.Fatal("OPENAI_API_KEY required for E2E tests")
-	}
-
 	// Real LLM provider
 	provider, providerName := initLLMProvider(t)
 	t.Logf("  using LLM provider: %s", providerName)
 
 	// Real embedder
-	emb := embedder.NewOpenAI(apiKey, "text-embedding-3-small")
+	emb := initEmbedder(t)
 
 	// Real SQLite
 	tmpDir := t.TempDir()

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/keyoku-ai/keyoku-engine/embedder"
 	"github.com/keyoku-ai/keyoku-engine/llm"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
@@ -175,6 +176,28 @@ func initLLMProvider(t *testing.T) (llm.Provider, string) {
 
 	t.Fatal("no LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY")
 	return nil, ""
+}
+
+// initEmbedder creates an embedder from environment variables.
+// Priority: GEMINI_API_KEY > OPENAI_API_KEY
+func initEmbedder(t *testing.T) embedder.Embedder {
+	t.Helper()
+
+	if key := os.Getenv("GEMINI_API_KEY"); key != "" {
+		emb, err := embedder.NewGemini(key, "gemini-embedding-001")
+		if err != nil {
+			t.Fatalf("failed to create Gemini embedder: %v", err)
+		}
+		t.Log("  using Gemini embeddings (gemini-embedding-001)")
+		return emb
+	}
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		t.Log("  using OpenAI embeddings (text-embedding-3-small)")
+		return embedder.NewOpenAI(key, "text-embedding-3-small")
+	}
+
+	t.Fatal("GEMINI_API_KEY or OPENAI_API_KEY required for embeddings")
+	return nil
 }
 
 func newCognitiveStressHarness(t *testing.T, cfg cognitiveStressConfig) *cognitiveStressHarness {

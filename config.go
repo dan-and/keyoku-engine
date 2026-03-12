@@ -12,7 +12,7 @@ type Config struct {
 	DBPath string
 
 	// Extraction LLM
-	ExtractionProvider string // "google", "openai", "anthropic"
+	ExtractionProvider string // "gemini", "openai", "anthropic"
 	ExtractionModel    string // e.g., "gemini-3-flash-preview", "gpt-5-mini", "claude-haiku-4-5-20251001"
 
 	// API Keys
