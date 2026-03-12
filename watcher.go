@@ -12,7 +12,7 @@ import (
 
 // WatcherConfig configures the proactive heartbeat watcher.
 type WatcherConfig struct {
-	// Interval between heartbeat checks (default: 10s).
+	// Interval between heartbeat checks (default: 5m).
 	Interval time.Duration
 
 	// EntityIDs to watch. If empty, the watcher does nothing until entities are added.
@@ -28,7 +28,7 @@ type WatcherConfig struct {
 // DefaultWatcherConfig returns a default watcher configuration.
 func DefaultWatcherConfig() WatcherConfig {
 	return WatcherConfig{
-		Interval: 10 * time.Second,
+		Interval: 5 * time.Minute,
 	}
 }
 
@@ -64,7 +64,7 @@ func newWatcher(k *Keyoku, config WatcherConfig) *Watcher {
 	}
 
 	if config.Interval <= 0 {
-		config.Interval = 10 * time.Second
+		config.Interval = 5 * time.Minute
 	}
 
 	return &Watcher{

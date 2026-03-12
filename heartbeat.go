@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/keyoku-ai/keyoku-engine/llm"
@@ -124,94 +123,31 @@ func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
 	}
 }
 
-// --- Active Hours Detection ---
+// --- Quiet Hours ---
 
-// ActiveHours represents the inferred quiet window for an entity.
-type ActiveHours struct {
-	QuietStart int       // UTC hour when quiet period begins
-	QuietEnd   int       // UTC hour when quiet period ends
-	ComputedAt time.Time
-	HasData    bool      // false if insufficient messages to infer
-}
-
-// activeHoursCache stores computed active hours per entity.
-var activeHoursCache = struct {
-	sync.RWMutex
-	m map[string]*ActiveHours
-}{m: make(map[string]*ActiveHours)}
-
-// getActiveHours returns cached active hours or computes them.
-func getActiveHours(ctx context.Context, store storage.Store, entityID string) *ActiveHours {
-	activeHoursCache.RLock()
-	cached, ok := activeHoursCache.m[entityID]
-	activeHoursCache.RUnlock()
-
-	if ok && time.Since(cached.ComputedAt) < 24*time.Hour {
-		return cached
-	}
-
-	ah := computeActiveHours(ctx, store, entityID)
-
-	activeHoursCache.Lock()
-	activeHoursCache.m[entityID] = ah
-	activeHoursCache.Unlock()
-
-	return ah
-}
-
-// computeActiveHours analyzes message timestamps to find quiet hours.
-func computeActiveHours(ctx context.Context, store storage.Store, entityID string) *ActiveHours {
-	dist, err := store.GetMessageHourDistribution(ctx, entityID, 14)
+// pstLocation is the US/Pacific timezone used for quiet hours.
+// Hardcoded for now; will be configurable per-entity in the future.
+var pstLocation = func() *time.Location {
+	loc, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
-		return &ActiveHours{ComputedAt: time.Now(), HasData: false}
+		// Fallback: UTC-8 (standard PST, no DST handling)
+		loc = time.FixedZone("PST", -8*60*60)
 	}
+	return loc
+}()
 
-	// Need minimum 20 messages for reliable inference
-	total := 0
-	for _, count := range dist {
-		total += count
-	}
-	if total < 20 {
-		return &ActiveHours{ComputedAt: time.Now(), HasData: false}
-	}
+// quietHourStart and quietHourEnd define the quiet window in local time.
+// 11pm - 7am PST = no heartbeat nudges unless immediate tier.
+const (
+	quietHourStart = 23 // 11pm local
+	quietHourEnd   = 7  // 7am local
+)
 
-	// Find the 6-hour contiguous window with least activity (quiet window)
-	// Use circular sliding window over 24 hours
-	minSum := total + 1
-	bestStart := 0
-	windowSize := 6 // 6 hours of quiet time
-
-	for start := 0; start < 24; start++ {
-		sum := 0
-		for i := 0; i < windowSize; i++ {
-			h := (start + i) % 24
-			sum += dist[h]
-		}
-		if sum < minSum {
-			minSum = sum
-			bestStart = start
-		}
-	}
-
-	return &ActiveHours{
-		QuietStart: bestStart,
-		QuietEnd:   (bestStart + windowSize) % 24,
-		ComputedAt: time.Now(),
-		HasData:    true,
-	}
-}
-
-// isQuietHour checks if the current time falls within the quiet window.
-func (ah *ActiveHours) isQuietHour() bool {
-	if !ah.HasData {
-		return false // not enough data, assume always active
-	}
-	hour := time.Now().UTC().Hour()
-	if ah.QuietStart < ah.QuietEnd {
-		return hour >= ah.QuietStart && hour < ah.QuietEnd
-	}
-	// Wraps midnight (e.g., 22:00 - 06:00)
-	return hour >= ah.QuietStart || hour < ah.QuietEnd
+// isQuietHour checks if the current time falls within the quiet window (PST).
+func isQuietHour() bool {
+	hour := time.Now().In(pstLocation).Hour()
+	// Wraps midnight: 23:00 - 07:00
+	return hour >= quietHourStart || hour < quietHourEnd
 }
 
 // GoalProgressItem tracks a plan's progress based on related activity memories.
@@ -903,9 +839,8 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	// Cleanup old records (fire-and-forget, 7 days)
 	_ = k.store.CleanupOldHeartbeatActions(ctx, 7*24*time.Hour)
 
-	// 1. Check active hours — suppress if in quiet window
-	ah := getActiveHours(ctx, k.store, entityID)
-	if ah.isQuietHour() {
+	// 1. Check quiet hours (PST) — suppress if in quiet window
+	if isQuietHour() {
 		// Immediate tier bypasses quiet hours
 		hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
 		if !hasImmediate {
@@ -916,7 +851,23 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 2. Classify active signals and find highest urgency tier
+	// 2. Active conversation suppression — if user messaged recently, don't interrupt
+	// Only immediate tier (cron/deadlines) bypasses this.
+	recentMsgs, convErr := k.store.GetRecentSessionMessages(ctx, entityID, 1)
+	if convErr == nil && len(recentMsgs) > 0 {
+		sinceLastMsg := time.Since(recentMsgs[0].CreatedAt)
+		if sinceLastMsg < 15*time.Minute {
+			hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
+			if !hasImmediate {
+				result.ShouldAct = false
+				result.DecisionReason = "suppress_active_conversation"
+				k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_active_conversation", TierLow, 0)
+				return
+			}
+		}
+	}
+
+	// 3. Classify active signals and find highest urgency tier
 	activeSignals := k.classifyActiveSignals(result)
 	if len(activeSignals) == 0 {
 		// No signals — try nudge protocol
@@ -1051,9 +1002,8 @@ func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy 
 		}
 	}
 
-	// Check active hours for nudges too
-	ah := getActiveHours(ctx, k.store, entityID)
-	if ah.isQuietHour() {
+	// Check quiet hours for nudges too
+	if isQuietHour() {
 		result.ShouldAct = false
 		result.DecisionReason = "suppress_quiet"
 		return
@@ -1074,8 +1024,30 @@ func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy 
 }
 
 // findNudgeContent selects a meaningful memory to reference in a nudge.
+// Prioritizes continuity-style content (plans, activities) over generic facts,
+// because "how did X go?" feels more human than "you have pending work."
 func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string) string {
-	// Look for high-importance memories with low access count (unsurfaced)
+	// 1. First priority: plans and activities (continuity-style nudges)
+	// "How did that migration go?" / "You were working on X"
+	continuityTypes := []storage.MemoryType{storage.TypePlan, storage.TypeActivity}
+	plans, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		EntityID:   entityID,
+		AgentID:    agentID,
+		Types:      continuityTypes,
+		States:     []storage.MemoryState{storage.StateActive},
+		Limit:      10,
+		OrderBy:    "updated_at",
+		Descending: true,
+	})
+	if err == nil {
+		for _, m := range plans {
+			if m.AccessCount < 3 && m.Importance >= 0.5 {
+				return m.Content
+			}
+		}
+	}
+
+	// 2. Second priority: high-importance unsurfaced memories of any type
 	memories, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
 		AgentID:    agentID,
@@ -1088,14 +1060,13 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 		return ""
 	}
 
-	// Prefer memories that haven't been surfaced much
 	for _, m := range memories {
 		if m.AccessCount < 3 && m.Importance >= 0.6 {
 			return m.Content
 		}
 	}
 
-	// Fall back to most important
+	// 3. Fall back to most important
 	return memories[0].Content
 }
 
