@@ -47,6 +47,11 @@ func expandQueryForFTS(query string) []string {
 		{[]string{"plan", "future", "going to", "intend", "goal"}, []string{"plans", "intends", "goal", "future"}},
 		{[]string{"like", "prefer", "favorite", "favourite", "enjoy"}, []string{"likes", "prefers", "favorite", "enjoys"}},
 		{[]string{"friend", "know", "relationship", "family"}, []string{"friend", "knows", "relationship"}},
+		{[]string{"boss", "manager", "supervisor", "report to"}, []string{"boss", "manager", "VP", "director", "supervisor", "engineering"}},
+		{[]string{"cook", "food", "eat", "cuisine", "recipe", "meal"}, []string{"cooking", "food", "cuisine", "pasta", "recipe"}},
+		{[]string{"hobby", "hobbies", "free time", "spare time", "weekend"}, []string{"hobby", "weekend", "free time"}},
+		{[]string{"pet", "dog", "cat", "animal"}, []string{"pet", "dog", "cat", "retriever"}},
+		{[]string{"invest", "money", "finance", "saving", "retirement"}, []string{"invest", "funds", "retirement", "finance"}},
 	}
 
 	for _, exp := range expansions {

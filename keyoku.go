@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/keyoku-ai/keyoku-engine/embedder"
 	"github.com/keyoku-ai/keyoku-engine/engine"
@@ -81,6 +82,14 @@ const (
 )
 
 // Keyoku is the main public API for the embedded memory engine.
+// QuietHoursConfig controls when heartbeats are suppressed.
+type QuietHoursConfig struct {
+	Enabled  bool
+	Start    int // hour 0-23
+	End      int // hour 0-23
+	Location *time.Location
+}
+
 type Keyoku struct {
 	engine       *engine.Engine
 	store        storage.Store
@@ -91,6 +100,7 @@ type Keyoku struct {
 	stateManager *engine.StateManager
 	eventBus     *EventBus
 	watcher      *Watcher
+	quietHours   QuietHoursConfig
 }
 
 // New creates a new Keyoku instance with the given configuration.
@@ -135,6 +145,26 @@ func New(cfg Config) (*Keyoku, error) {
 	// Create event bus (async so handlers never block the hot path)
 	eventBus := NewEventBus(true)
 
+	// Build quiet hours config
+	qh := QuietHoursConfig{
+		Enabled: cfg.QuietHoursEnabled,
+		Start:   cfg.QuietHourStart,
+		End:     cfg.QuietHourEnd,
+	}
+	if qh.Start == 0 && qh.End == 0 && qh.Enabled {
+		qh.Start = 23
+		qh.End = 7
+	}
+	if cfg.QuietHoursTimezone != "" {
+		loc, err := time.LoadLocation(cfg.QuietHoursTimezone)
+		if err != nil {
+			return nil, fmt.Errorf("invalid quiet hours timezone %q: %w", cfg.QuietHoursTimezone, err)
+		}
+		qh.Location = loc
+	} else {
+		qh.Location = pstLocation
+	}
+
 	k := &Keyoku{
 		store:        store,
 		emb:          emb,
@@ -142,6 +172,7 @@ func New(cfg Config) (*Keyoku, error) {
 		logger:       logger,
 		stateManager: engine.NewStateManager(store, provider),
 		eventBus:     eventBus,
+		quietHours:   qh,
 	}
 
 	// Create engine

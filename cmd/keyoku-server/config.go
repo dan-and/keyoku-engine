@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 
 	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
@@ -24,6 +25,10 @@ type ServerConfig struct {
 	EmbeddingBaseURL   string `json:"embedding_base_url"`
 	EmbeddingModel     string `json:"embedding_model"`
 	SchedulerEnabled   *bool  `json:"scheduler_enabled"`
+	QuietHoursEnabled  *bool  `json:"quiet_hours_enabled"`
+	QuietHourStart     *int   `json:"quiet_hour_start"`
+	QuietHourEnd       *int   `json:"quiet_hour_end"`
+	QuietHoursTimezone string `json:"quiet_hours_timezone"`
 }
 
 // DefaultServerConfig returns a server config with sensible defaults.
@@ -85,6 +90,23 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	if v := os.Getenv("EMBEDDING_BASE_URL"); v != "" {
 		cfg.EmbeddingBaseURL = v
 	}
+	if v := os.Getenv("KEYOKU_QUIET_HOURS_ENABLED"); v != "" {
+		enabled := v == "true" || v == "1"
+		cfg.QuietHoursEnabled = &enabled
+	}
+	if v := os.Getenv("KEYOKU_QUIET_HOUR_START"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 23 {
+			cfg.QuietHourStart = &n
+		}
+	}
+	if v := os.Getenv("KEYOKU_QUIET_HOUR_END"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 23 {
+			cfg.QuietHourEnd = &n
+		}
+	}
+	if v := os.Getenv("KEYOKU_QUIET_HOURS_TIMEZONE"); v != "" {
+		cfg.QuietHoursTimezone = v
+	}
 
 	return cfg, nil
 }
@@ -122,6 +144,18 @@ func (sc ServerConfig) ToKeyokuConfig() keyoku.Config {
 	}
 	if sc.SchedulerEnabled != nil {
 		cfg.SchedulerEnabled = *sc.SchedulerEnabled
+	}
+	if sc.QuietHoursEnabled != nil {
+		cfg.QuietHoursEnabled = *sc.QuietHoursEnabled
+	}
+	if sc.QuietHourStart != nil {
+		cfg.QuietHourStart = *sc.QuietHourStart
+	}
+	if sc.QuietHourEnd != nil {
+		cfg.QuietHourEnd = *sc.QuietHourEnd
+	}
+	if sc.QuietHoursTimezone != "" {
+		cfg.QuietHoursTimezone = sc.QuietHoursTimezone
 	}
 
 	return cfg

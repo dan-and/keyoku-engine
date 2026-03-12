@@ -166,29 +166,29 @@ func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
 
 // --- Quiet Hours ---
 
-// pstLocation is the US/Pacific timezone used for quiet hours.
-// Hardcoded for now; will be configurable per-entity in the future.
+// pstLocation is the US/Pacific timezone used as default for quiet hours.
 var pstLocation = func() *time.Location {
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
-		// Fallback: UTC-8 (standard PST, no DST handling)
 		loc = time.FixedZone("PST", -8*60*60)
 	}
 	return loc
 }()
 
-// quietHourStart and quietHourEnd define the quiet window in local time.
-// 11pm - 7am PST = no heartbeat nudges unless immediate tier.
-const (
-	quietHourStart = 23 // 11pm local
-	quietHourEnd   = 7  // 7am local
-)
-
-// isQuietHour checks if the current time falls within the quiet window (PST).
-func isQuietHour() bool {
-	hour := time.Now().In(pstLocation).Hour()
-	// Wraps midnight: 23:00 - 07:00
-	return hour >= quietHourStart || hour < quietHourEnd
+// isQuietHour checks if the current time falls within the configured quiet window.
+// Returns false if quiet hours are disabled (default).
+func (k *Keyoku) isQuietHour() bool {
+	if !k.quietHours.Enabled {
+		return false
+	}
+	hour := time.Now().In(k.quietHours.Location).Hour()
+	start := k.quietHours.Start
+	end := k.quietHours.End
+	if start > end {
+		// Wraps midnight: e.g., 23:00 - 07:00
+		return hour >= start || hour < end
+	}
+	return hour >= start && hour < end
 }
 
 // GoalProgressItem tracks a plan's progress based on related activity memories.
@@ -900,7 +900,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	}
 
 	// 2. Quiet hours (PST) — suppress non-immediate
-	if isQuietHour() {
+	if k.isQuietHour() {
 		hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
 		if !hasImmediate {
 			result.ShouldAct = false
@@ -1148,7 +1148,7 @@ func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy 
 	}
 
 	// Check quiet hours for nudges too
-	if isQuietHour() {
+	if k.isQuietHour() {
 		result.ShouldAct = false
 		result.DecisionReason = "suppress_quiet"
 		return

@@ -60,6 +60,13 @@ type Config struct {
 	ArchivalDays       int     // default: 30
 	PurgeRetentionDays int     // default: 90
 
+	// Heartbeat quiet hours — suppress non-immediate heartbeats during this window.
+	// Disabled by default (heartbeats work anytime). Set QuietHoursEnabled=true to activate.
+	QuietHoursEnabled  bool   // default: false
+	QuietHourStart     int    // hour in QuietHoursTimezone (0-23), default: 23 (11pm)
+	QuietHourEnd       int    // hour in QuietHoursTimezone (0-23), default: 7 (7am)
+	QuietHoursTimezone string // IANA timezone (e.g., "America/Los_Angeles"), default: "America/Los_Angeles"
+
 	// Team behavior
 	DefaultVisibility string // "private", "team", or "global" (default: "private"; overridden to "team" when agent has a team)
 }
