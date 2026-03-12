@@ -168,6 +168,10 @@ type HeartbeatAnalysisRequest struct {
 	RelationshipAlerts []string `json:"relationship_alerts,omitempty"` // Silent entity alerts
 	KnowledgeGaps     []string `json:"knowledge_gaps,omitempty"`     // Unanswered questions
 	BehavioralPatterns []string `json:"behavioral_patterns,omitempty"` // Day-of-week patterns
+
+	// v2: Graph enrichment and delta detection
+	GraphContext    []string `json:"graph_context,omitempty"`    // Entity relationship context from knowledge graph
+	PositiveDeltas []string `json:"positive_deltas,omitempty"` // Detected positive changes since last heartbeat
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.

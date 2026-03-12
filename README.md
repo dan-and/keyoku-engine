@@ -7,15 +7,16 @@
   </picture>
 
   <p>
-    <strong>Intelligent memory engine for AI agents.</strong><br>
-    <sub>Extract, store, search, decay, and consolidate memories — all locally with SQLite and in-process vector search.</sub>
+    <strong>The memory engine that makes AI agents feel human.</strong><br>
+    <sub>Memories that live, decay, and consolidate. A knowledge graph that understands relationships.<br>A brain that decides what matters — all running locally in pure Go.</sub>
   </p>
 
   <p>
+    <a href="#what-this-is">What This Is</a> &bull;
     <a href="#quick-start">Quick Start</a> &bull;
-    <a href="#api">API Reference</a> &bull;
-    <a href="#architecture">Architecture</a> &bull;
-    <a href="#configuration">Configuration</a>
+    <a href="#the-brain">The Brain</a> &bull;
+    <a href="#api">API</a> &bull;
+    <a href="#architecture">Architecture</a>
   </p>
 
   [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
@@ -27,34 +28,17 @@
 
 <br>
 
-<table>
-<tr>
-<td align="center" width="16%">
-  <strong>Semantic Search</strong><br>
-  <sub>Tiered HNSW vector + FTS retrieval with LRU hot cache</sub>
-</td>
-<td align="center" width="16%">
-  <strong>Heartbeat</strong><br>
-  <sub>Zero-token check for deadlines, decay, conflicts &amp; more</sub>
-</td>
-<td align="center" width="16%">
-  <strong>Knowledge Graph</strong><br>
-  <sub>Auto-extracted entities and relationship mapping</sub>
-</td>
-<td align="center" width="16%">
-  <strong>Scheduling</strong><br>
-  <sub>Cron-tagged memories with ack tracking</sub>
-</td>
-<td align="center" width="16%">
-  <strong>Teams</strong><br>
-  <sub>Multi-agent visibility boundaries</sub>
-</td>
-<td align="center" width="16%">
-  <strong>Pure Go</strong><br>
-  <sub>No CGO, no external DB — just SQLite + HNSW</sub>
-</td>
-</tr>
-</table>
+## What This Is
+
+Keyoku is not a vector database. It's a **cognitive engine** — the system that sits behind an AI agent and gives it the ability to remember, understand connections, and act on what it knows.
+
+**Memory that lives.** Memories aren't rows in a table. They're extracted from conversations, deduplicated by meaning, merged when they overlap, and decay when unused — just like human memory. Important things stick. Irrelevant things fade.
+
+**A knowledge graph that grows itself.** Every conversation automatically builds a graph of people, organizations, and how they relate. The agent doesn't just remember "Alice mentioned Bob" — it knows Alice works at Acme, Bob is her manager, and they're collaborating on a Q3 launch.
+
+**A brain that doesn't wait to be asked.** The heartbeat system scans 12 signal categories across your entire memory store — deadlines, goals, sentiment shifts, relationship gaps, behavioral patterns — combines weak signals into decisions, enriches everything with the knowledge graph, and compiles it through an LLM into a single actionable output.
+
+Zero external dependencies. Pure Go. SQLite + in-process HNSW. Your data never leaves your machine.
 
 ## Quick Start
 
@@ -103,6 +87,97 @@ export OPENAI_API_KEY="sk-..."
 
 Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 
+## The Brain
+
+The heartbeat is Keyoku's most important subsystem. It turns passive memory into active intelligence.
+
+### How it works
+
+Every tick, the brain runs a **zero-token scan** — 12 SQL-driven checks across your entire memory store, costing nothing. Only when it finds something worth acting on does it spend LLM tokens to compile a response.
+
+### What it scans
+
+| Signal | Example |
+|--------|---------|
+| **Scheduled tasks** | "Daily standup prep" fired at 9am |
+| **Deadline proximity** | Project due in 47 minutes — forced immediate |
+| **Pending work** | 3 unfinished plans, highest importance first |
+| **Goal progress** | "API migration" went from 20% to 60% since last check |
+| **Session continuity** | User was mid-conversation about deployment 2h ago |
+| **Sentiment shift** | Mood declined over last 5 conversations |
+| **Relationship gaps** | Haven't heard from Alice in 12 days |
+| **Knowledge gaps** | Agent couldn't answer a question last week |
+| **Behavioral patterns** | User typically does code reviews on Tuesdays |
+| **Conflicts** | Two memories contradict each other |
+| **Stale monitors** | A tracked plan hasn't been touched in 24h |
+| **Decaying memories** | Important memory approaching decay threshold |
+
+### What makes it smart
+
+The brain doesn't just check signals — it **thinks about them**:
+
+- **Confluence.** Five weak signals combine to trigger action. A fading memory + a sentiment dip + a relationship gap + a stale plan + a behavioral pattern = worth mentioning, even though none alone would be.
+
+- **Response awareness.** If the user ignores nudges, the brain backs off — 3x cooldown at 30% response rate, 10x at under 10%. No spam.
+
+- **Topic dedup.** Same topic won't resurface just because the memory ID changed. The brain checks entity overlap between current signals and recent decisions.
+
+- **Deadline gradient.** A deadline in 47 minutes is not the same as one in 20 hours. Proximity scoring creates urgency naturally — and critical deadlines bypass quiet hours.
+
+- **Progress detection.** When a goal improves (at_risk to on_track) or a silent contact re-engages, the brain notices and surfaces it as a positive change. Agents should acknowledge improvement, not just nag.
+
+- **Pattern matching.** Nudges are matched to the user's behavioral patterns. If they typically do deep work on Wednesdays, the brain finds related plans and surfaces them.
+
+- **Graph enrichment.** Before sending signals to the LLM, the brain traverses the knowledge graph — collecting entity relationships so the LLM understands WHO is involved and HOW they connect, not just raw text.
+
+The LLM receives a structured prompt with signals, knowledge graph context, and positive changes. It outputs an action brief, recommended actions, urgency level, and a user-facing message. The brain gates this — the LLM can suppress a "should act" decision, but never promote one. The engine always has final say.
+
+### Autonomy levels
+
+| Level | Sees signals | Messages user | Takes action |
+|-------|:---:|:---:|:---:|
+| `observe` | Yes | No | No |
+| `suggest` | Yes | Yes (as suggestions) | No |
+| `act` | Yes | Yes | Yes |
+
+## Memory Lifecycle
+
+Memories flow through four states, managed automatically by background jobs:
+
+```
+ACTIVE ──decay──▶ STALE ──decay──▶ ARCHIVED ──decay──▶ DELETED
+  ▲                                    │
+  └────── access reinforcement ────────┘
+```
+
+**Decay** follows an Ebbinghaus curve with access-frequency boosting — memories that get retrieved resist decay. 10 accesses = 2.2x stability. 50 accesses = 2.96x stability. Stability varies by type: ephemeral memories last 3 days, identity memories last 365.
+
+**Consolidation** runs hourly, merging similar memories (0.85+ similarity) via LLM synthesis — eliminating redundancy while preserving all important facts.
+
+**Deduplication** catches duplicates at write time — both exact (hash) and semantic (0.95 threshold). Near-duplicates (0.75+) get merged instead of rejected.
+
+**Conflict detection** uses LLM analysis to find contradictions and recommend resolution: keep existing, use new, merge, or ask the user.
+
+## Knowledge Graph
+
+Built automatically from every conversation:
+
+- **Entities** — people, organizations, locations, products. Extracted via proper noun detection + type inference. Aliases tracked (max 10 per entity). Semantic matching at 0.85 threshold.
+
+- **Relationships** — 40+ auto-detected types (works_at, manages, friend_of, married_to, etc.) with strength, confidence, and evidence tracking. Bidirectional inference.
+
+- **Graph traversal** — BFS up to 5 hops, shortest path between entities, LLM-powered explanations of how two entities connect.
+
+```go
+// Find how Alice and Bob are connected
+path, _ := k.Graph().FindPath(ctx, "owner-id", aliceID, bobID)
+
+// Get a natural language explanation
+explanation, _ := k.Graph().ExplainConnection(ctx, "owner-id", aliceID, bobID)
+// => "Alice works at Acme Corp where Bob is a senior engineer.
+//     They're both assigned to the Q3 product launch."
+```
+
 ## API
 
 <details>
@@ -125,7 +200,7 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/heartbeat/check` | Zero-token action detection |
+| POST | `/api/v1/heartbeat/check` | Zero-token signal detection |
 | POST | `/api/v1/heartbeat/context` | Extended heartbeat with LLM analysis |
 | POST | `/api/v1/watcher/start` | Start continuous heartbeat monitor |
 | POST | `/api/v1/watcher/stop` | Stop watcher |
@@ -177,8 +252,8 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 │         keyoku-server (HTTP + SSE)           │
 │                                              │
 │  ┌────────────┐ ┌──────────┐ ┌────────────┐  │
-│  │  Remember  │ │  Search  │ │ Heartbeat  │  │
-│  │  Extract   │ │  Tiered  │ │ Zero-Token │  │
+│  │  Remember  │ │  Search  │ │   Brain    │  │
+│  │  Extract   │ │  Tiered  │ │ Heartbeat  │  │
 │  └──────┬─────┘ └────┬─────┘ └─────┬──────┘  │
 │         └─────────────┼─────────────┘        │
 │                       ▼                      │
@@ -191,6 +266,7 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 │  ┌────────────────────────────────────────┐  │
 │  │        Storage (SQLite WAL)            │  │
 │  │  memories · entities · relationships   │  │
+│  │  teams · schemas · agent state         │  │
 │  └──────┬───────────┬───────────┬─────────┘  │
 │         ▼           ▼           ▼            │
 │  ┌────────────┐ ┌──────────┐ ┌────────────┐  │

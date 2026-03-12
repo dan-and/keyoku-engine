@@ -121,6 +121,12 @@ type Store interface {
 	CleanupOldHeartbeatActions(ctx context.Context, olderThan time.Duration) error
 	GetMessageHourDistribution(ctx context.Context, entityID string, days int) (map[int]int, error)
 
+	// Heartbeat v2: intelligence
+	GetHeartbeatActionsForResponseCheck(ctx context.Context, entityID string, minAge time.Duration) ([]*HeartbeatAction, error)
+	UpdateHeartbeatActionResponse(ctx context.Context, actionID string, responded bool) error
+	GetRecentActDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error)
+	GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) // rate, total, error
+
 	// Aggregation & Sampling (for reporting at scale)
 	AggregateStats(ctx context.Context, entityID string) (*AggregatedStats, error)
 	SampleMemories(ctx context.Context, entityID string, limit int) ([]*Memory, error)

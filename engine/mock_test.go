@@ -529,6 +529,10 @@ func (m *mockStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*
 func (m *mockStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error) { return 0, nil }
 func (m *mockStore) CleanupOldHeartbeatActions(_ context.Context, _ time.Duration) error { return nil }
 func (m *mockStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) { return nil, nil }
+func (m *mockStore) GetHeartbeatActionsForResponseCheck(_ context.Context, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
+func (m *mockStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _ bool) error { return nil }
+func (m *mockStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
+func (m *mockStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) { return 1.0, 0, nil }
 func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
 func (m *mockStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *mockStore) Close() error {

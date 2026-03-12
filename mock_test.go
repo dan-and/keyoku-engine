@@ -281,6 +281,10 @@ func (m *testStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*
 func (m *testStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error) { return 0, nil }
 func (m *testStore) CleanupOldHeartbeatActions(_ context.Context, _ time.Duration) error { return nil }
 func (m *testStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) { return nil, nil }
+func (m *testStore) GetHeartbeatActionsForResponseCheck(_ context.Context, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
+func (m *testStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _ bool) error { return nil }
+func (m *testStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
+func (m *testStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) { return 1.0, 0, nil }
 func (m *testStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
 func (m *testStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *testStore) Close() error {

@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -46,8 +48,29 @@ type HeartbeatResult struct {
 	SignalFingerprint  string // for debugging
 	NudgeContext       string // memory content selected for nudge
 
+	// v2: Intelligence metadata
+	PositiveDeltas  []PositiveDelta // Detected positive changes since last heartbeat
+	GraphContext    []string        // Entity relationship context for LLM
+	TopicEntities  []string        // Entity IDs from current signals
+	ResponseRate   float64         // 7-day user response rate (0.0-1.0)
+	ConfluenceScore int            // Total signal weight
+
 	// Team heartbeat fields (populated only in team heartbeat mode)
 	ByAgent map[string]*AgentHeartbeatSummary // per-agent breakdown (team mode only)
+}
+
+// StateSnapshot captures key metrics at a point in time for delta detection.
+type StateSnapshot struct {
+	GoalStatuses         map[string]string `json:"goal_statuses"`          // planID -> status
+	RelationshipSilences map[string]int    `json:"relationship_silences"`  // entityID -> days_silent
+	SentimentDirection   string            `json:"sentiment_direction"`
+}
+
+// PositiveDelta represents a detected improvement between heartbeat cycles.
+type PositiveDelta struct {
+	Type        string // "goal_improved", "entity_reengaged", "sentiment_improved"
+	Description string
+	EntityID    string // optional, for entity-specific deltas
 }
 
 // --- Signal Urgency Tiers ---
@@ -81,6 +104,21 @@ var tierPriority = map[string]int{
 	TierElevated:  1,
 	TierNormal:    2,
 	TierLow:       3,
+}
+
+// tierWeight assigns signal importance for confluence scoring.
+var tierWeight = map[string]int{
+	TierImmediate: 10,
+	TierElevated:  5,
+	TierNormal:    3,
+	TierLow:       1,
+}
+
+// confluenceThreshold is the minimum combined signal weight to trigger action.
+var confluenceThreshold = map[string]int{
+	"act":     8,
+	"suggest": 12,
+	"observe": 20,
 }
 
 // HeartbeatParams holds configurable parameters for heartbeat evaluation.
@@ -803,20 +841,19 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 }
 
 // evaluateShouldAct determines whether the heartbeat should trigger action.
-// Implements cooldown, novelty, active hours, and nudge protocol.
+// v2: Integrates response rate, confluence, topic dedup, proximity, deltas, and graph enrichment.
 func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *heartbeatConfig, result *HeartbeatResult) {
 	agentID := cfg.agentID
 	if agentID == "" {
 		agentID = "default"
 	}
 
-	// Determine autonomy from config (will be overridden by handler if set in request)
+	// Determine autonomy from config
 	autonomy := "suggest"
 	if cfg.autonomy != "" {
 		autonomy = cfg.autonomy
 	}
 	params := DefaultHeartbeatParams(autonomy)
-	// Apply overrides if set
 	if cfg.heartbeatParams != nil {
 		p := cfg.heartbeatParams
 		if p.SignalCooldownNormal > 0 {
@@ -836,12 +873,24 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// Cleanup old records (fire-and-forget, 7 days)
+	// Background: check response tracking for previous actions + cleanup
+	go k.checkResponseTracking(ctx, entityID)
 	_ = k.store.CleanupOldHeartbeatActions(ctx, 7*24*time.Hour)
 
-	// 1. Check quiet hours (PST) — suppress if in quiet window
+	// 1. Deadline proximity — critical deadlines (<1h) force immediate
+	if len(result.Deadlines) > 0 {
+		proximityScore := calculateDeadlineProximity(result.Deadlines)
+		if proximityScore > 1.0 { // less than 1 hour remaining
+			result.ShouldAct = true
+			result.DecisionReason = "act_deadline_critical"
+			result.HighestUrgencyTier = TierImmediate
+			k.finalizeAct(ctx, entityID, agentID, cfg, result, TierImmediate)
+			return
+		}
+	}
+
+	// 2. Quiet hours (PST) — suppress non-immediate
 	if isQuietHour() {
-		// Immediate tier bypasses quiet hours
 		hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
 		if !hasImmediate {
 			result.ShouldAct = false
@@ -851,8 +900,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 2. Active conversation suppression — if user messaged recently, don't interrupt
-	// Only immediate tier (cron/deadlines) bypasses this.
+	// 3. Active conversation suppression
 	recentMsgs, convErr := k.store.GetRecentSessionMessages(ctx, entityID, 1)
 	if convErr == nil && len(recentMsgs) > 0 {
 		sinceLastMsg := time.Since(recentMsgs[0].CreatedAt)
@@ -867,10 +915,9 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 3. Classify active signals and find highest urgency tier
+	// 4. Classify signals
 	activeSignals := k.classifyActiveSignals(result)
 	if len(activeSignals) == 0 {
-		// No signals — try nudge protocol
 		k.evaluateNudge(ctx, entityID, agentID, autonomy, params, result)
 		return
 	}
@@ -883,34 +930,49 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	}
 	result.HighestUrgencyTier = highestTier
 
-	// 3. Compute signal fingerprint
+	// 5. Confluence scoring — multiple weak signals can combine
+	confluenceWeight, meetsConfluence := calculateSignalConfluence(activeSignals, autonomy)
+	result.ConfluenceScore = confluenceWeight
+
+	// 6. Fingerprint
 	fingerprint := k.computeSignalFingerprint(result)
 	result.SignalFingerprint = fingerprint
-
 	totalSignals := len(activeSignals)
 
-	// 4. Get last "act" decision
+	// 7. Get last "act" decision
 	lastAct, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
 
-	// 5. Immediate tier always passes (cron, deadlines)
+	// 8. Immediate tier always passes
 	if highestTier == TierImmediate {
 		result.ShouldAct = true
 		result.DecisionReason = "act"
-		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "act", highestTier, totalSignals)
-
-		// Still run LLM prioritization if available
-		k.runLLMPrioritization(ctx, cfg, result)
+		k.finalizeAct(ctx, entityID, agentID, cfg, result, highestTier)
 		return
 	}
 
-	// 6. Cooldown check
+	// 9. Confluence promotion — weak signals combining to trigger
+	if highestTier != TierElevated && meetsConfluence {
+		result.ShouldAct = true
+		result.DecisionReason = "act_confluence"
+		result.HighestUrgencyTier = "confluence"
+		k.finalizeAct(ctx, entityID, agentID, cfg, result, "confluence")
+		return
+	}
+
+	// 10. Response rate → cooldown multiplier
+	responseRate := k.calculateResponseRate(ctx, entityID, agentID)
+	result.ResponseRate = responseRate
+	multiplier := responseCooldownMultiplier(responseRate)
+
+	// 11. Cooldown check (with response rate multiplier)
 	if err == nil && lastAct != nil {
 		cooldown := params.SignalCooldownNormal
 		if highestTier == TierLow {
 			cooldown = params.SignalCooldownLow
 		} else if highestTier == TierElevated {
-			cooldown = time.Hour // elevated always 1h
+			cooldown = time.Hour
 		}
+		cooldown = time.Duration(float64(cooldown) * multiplier)
 
 		if time.Since(lastAct.ActedAt) < cooldown {
 			result.ShouldAct = false
@@ -920,7 +982,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 7. Novelty check — same fingerprint means nothing changed
+	// 12. Novelty check
 	if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
 		result.ShouldAct = false
 		result.DecisionReason = "suppress_stale"
@@ -928,10 +990,55 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		return
 	}
 
-	// 8. Passed all checks — act
+	// 13. Topic entity dedup
+	topicEntities := k.extractTopicEntities(ctx, result)
+	result.TopicEntities = topicEntities
+	if k.shouldSuppressTopicRepeat(ctx, entityID, agentID, topicEntities) {
+		result.ShouldAct = false
+		result.DecisionReason = "suppress_topic_repeat"
+		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_topic_repeat", highestTier, totalSignals)
+		return
+	}
+
+	// 14. Passed all checks — act
 	result.ShouldAct = true
 	result.DecisionReason = "act"
-	k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "act", highestTier, totalSignals)
+	k.finalizeAct(ctx, entityID, agentID, cfg, result, highestTier)
+}
+
+// finalizeAct handles the post-decision work for "act" decisions:
+// state snapshot, delta detection, graph enrichment, topic entities, and recording.
+func (k *Keyoku) finalizeAct(ctx context.Context, entityID, agentID string, cfg *heartbeatConfig, result *HeartbeatResult, tier string) {
+	fingerprint := result.SignalFingerprint
+	totalSignals := len(k.classifyActiveSignals(result))
+
+	// Extract topic entities if not already done
+	if len(result.TopicEntities) == 0 {
+		result.TopicEntities = k.extractTopicEntities(ctx, result)
+	}
+
+	// Build state snapshot and detect deltas
+	snapshot := buildStateSnapshot(result)
+	snapshotJSON, _ := json.Marshal(snapshot)
+
+	lastAct, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
+	if err == nil && lastAct != nil && lastAct.StateSnapshot != "" {
+		var prevSnapshot StateSnapshot
+		if json.Unmarshal([]byte(lastAct.StateSnapshot), &prevSnapshot) == nil {
+			result.PositiveDeltas = detectDeltas(snapshot, prevSnapshot)
+		}
+	}
+
+	// Graph enrichment
+	result.GraphContext = k.enrichSignalsWithGraph(ctx, entityID, result)
+
+	// Response rate
+	if result.ResponseRate == 0 {
+		result.ResponseRate = k.calculateResponseRate(ctx, entityID, agentID)
+	}
+
+	// Record decision with full metadata
+	k.recordDecisionFull(ctx, entityID, agentID, "signal", fingerprint, "act", tier, totalSignals, result.TopicEntities, string(snapshotJSON))
 
 	// LLM prioritization
 	k.runLLMPrioritization(ctx, cfg, result)
@@ -991,6 +1098,12 @@ func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy 
 		}
 	}
 
+	// Apply response rate multiplier — if user doesn't respond, back off harder
+	responseRate := k.calculateResponseRate(ctx, entityID, agentID)
+	result.ResponseRate = responseRate
+	multiplier := responseCooldownMultiplier(responseRate)
+	requiredInterval = time.Duration(float64(requiredInterval) * multiplier)
+
 	// Check if enough time since last nudge (not last user message)
 	lastNudge, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
 	if err == nil && lastNudge != nil && lastNudge.TriggerCategory == "nudge" {
@@ -1024,11 +1137,68 @@ func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy 
 }
 
 // findNudgeContent selects a meaningful memory to reference in a nudge.
-// Prioritizes continuity-style content (plans, activities) over generic facts,
-// because "how did X go?" feels more human than "you have pending work."
+// v2: Uses behavioral patterns for today + graph traversal, then falls back to continuity-first.
 func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string) string {
-	// 1. First priority: plans and activities (continuity-style nudges)
-	// "How did that migration go?" / "You were working on X"
+	// 0. Pattern-aware: check what the user typically does today
+	patterns := k.detectBehavioralPatterns(ctx, entityID)
+	if len(patterns) > 0 {
+		// Collect pattern topic tags
+		var patternTags []string
+		for _, p := range patterns {
+			patternTags = append(patternTags, p.Topics...)
+		}
+
+		// Query memories matching today's typical topics
+		if len(patternTags) > 0 {
+			memories, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+				EntityID:   entityID,
+				AgentID:    agentID,
+				Tags:       patternTags,
+				States:     []storage.MemoryState{storage.StateActive},
+				Limit:      10,
+				OrderBy:    "updated_at",
+				Descending: true,
+			})
+			if err == nil {
+				for _, m := range memories {
+					if m.AccessCount < 3 && m.Importance >= 0.5 {
+						return m.Content
+					}
+				}
+			}
+		}
+
+		// Graph-enhanced: traverse from pattern entities to related plans
+		if k.engine != nil && k.engine.Graph() != nil {
+			for _, topic := range patternTags {
+				ent, err := k.store.FindEntityByAlias(ctx, entityID, topic)
+				if err != nil || ent == nil {
+					continue
+				}
+				edges, err := k.engine.Graph().GetEntityNeighbors(ctx, entityID, ent.ID)
+				if err != nil {
+					continue
+				}
+				for _, edge := range edges {
+					mentions, err := k.store.GetEntityMentions(ctx, edge.TargetEntity.ID, 5)
+					if err != nil {
+						continue
+					}
+					for _, mention := range mentions {
+						mem, err := k.store.GetMemory(ctx, mention.MemoryID)
+						if err != nil || mem == nil {
+							continue
+						}
+						if mem.State == storage.StateActive && mem.AccessCount < 3 {
+							return mem.Content
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 1. Continuity-first: plans and activities
 	continuityTypes := []storage.MemoryType{storage.TypePlan, storage.TypeActivity}
 	plans, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
@@ -1047,7 +1217,7 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 		}
 	}
 
-	// 2. Second priority: high-importance unsurfaced memories of any type
+	// 2. High-importance unsurfaced memories
 	memories, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
 		AgentID:    agentID,
@@ -1160,7 +1330,11 @@ func (k *Keyoku) computeSignalFingerprint(result *HeartbeatResult) string {
 
 // recordDecision persists a heartbeat decision for tracking.
 func (k *Keyoku) recordDecision(ctx context.Context, entityID, agentID, triggerCategory, fingerprint, decision, tier string, totalSignals int) {
-	_ = k.store.RecordHeartbeatAction(ctx, &storage.HeartbeatAction{
+	k.recordDecisionFull(ctx, entityID, agentID, triggerCategory, fingerprint, decision, tier, totalSignals, nil, "")
+}
+
+func (k *Keyoku) recordDecisionFull(ctx context.Context, entityID, agentID, triggerCategory, fingerprint, decision, tier string, totalSignals int, topicEntities []string, stateSnapshot string) {
+	action := &storage.HeartbeatAction{
 		EntityID:          entityID,
 		AgentID:           agentID,
 		TriggerCategory:   triggerCategory,
@@ -1168,7 +1342,316 @@ func (k *Keyoku) recordDecision(ctx context.Context, entityID, agentID, triggerC
 		Decision:          decision,
 		UrgencyTier:       tier,
 		TotalSignals:      totalSignals,
-	})
+		TopicEntities:     topicEntities,
+		StateSnapshot:     stateSnapshot,
+	}
+	_ = k.store.RecordHeartbeatAction(ctx, action)
+}
+
+// --- Heartbeat v2: Intelligence Functions ---
+
+// calculateResponseRate returns the 7-day response rate (0.0-1.0).
+// If insufficient data, assumes the user is responsive (returns 1.0).
+func (k *Keyoku) calculateResponseRate(ctx context.Context, entityID, agentID string) float64 {
+	rate, total, err := k.store.GetResponseRate(ctx, entityID, agentID, 7)
+	if err != nil || total < 3 {
+		return 1.0 // not enough data, assume responsive
+	}
+	return rate
+}
+
+// responseCooldownMultiplier returns a multiplier for cooldowns based on response rate.
+// Low response rates dramatically increase cooldowns to avoid annoying users.
+func responseCooldownMultiplier(rate float64) float64 {
+	if rate < 0.1 {
+		return 10.0
+	}
+	if rate < 0.3 {
+		return 3.0
+	}
+	return 1.0
+}
+
+// checkResponseTracking checks unchecked heartbeat actions and marks whether the user responded.
+// Should be called as a background goroutine.
+func (k *Keyoku) checkResponseTracking(ctx context.Context, entityID string) {
+	unchecked, err := k.store.GetHeartbeatActionsForResponseCheck(ctx, entityID, 2*time.Hour)
+	if err != nil || len(unchecked) == 0 {
+		return
+	}
+
+	// Get recent session messages (enough to cover the check window)
+	msgs, err := k.store.GetRecentSessionMessages(ctx, entityID, 100)
+	if err != nil {
+		return
+	}
+
+	for _, action := range unchecked {
+		responded := false
+		windowEnd := action.ActedAt.Add(2 * time.Hour)
+		for _, msg := range msgs {
+			if msg.Role == "user" && msg.CreatedAt.After(action.ActedAt) && msg.CreatedAt.Before(windowEnd) {
+				responded = true
+				break
+			}
+		}
+		_ = k.store.UpdateHeartbeatActionResponse(ctx, action.ID, responded)
+	}
+}
+
+// calculateSignalConfluence computes the total signal weight and whether it meets the threshold.
+func calculateSignalConfluence(activeSignals map[HeartbeatCheckType]string, autonomy string) (int, bool) {
+	totalWeight := 0
+	for _, tier := range activeSignals {
+		totalWeight += tierWeight[tier]
+	}
+	threshold, ok := confluenceThreshold[autonomy]
+	if !ok {
+		threshold = 12
+	}
+	return totalWeight, totalWeight >= threshold
+}
+
+// collectAllMemoryIDs gathers memory IDs from all signal categories in a HeartbeatResult.
+func collectAllMemoryIDs(result *HeartbeatResult) []string {
+	var ids []string
+	for _, m := range result.PendingWork {
+		ids = append(ids, m.ID)
+	}
+	for _, m := range result.Deadlines {
+		ids = append(ids, m.ID)
+	}
+	for _, m := range result.Scheduled {
+		ids = append(ids, m.ID)
+	}
+	for _, m := range result.Decaying {
+		ids = append(ids, m.ID)
+	}
+	for _, c := range result.Conflicts {
+		ids = append(ids, c.MemoryA.ID)
+	}
+	for _, m := range result.StaleMonitors {
+		ids = append(ids, m.ID)
+	}
+	for _, g := range result.GoalProgress {
+		ids = append(ids, g.Plan.ID)
+	}
+	return ids
+}
+
+// extractTopicEntities collects entity IDs from all signal memories using entity_mentions.
+func (k *Keyoku) extractTopicEntities(ctx context.Context, result *HeartbeatResult) []string {
+	memoryIDs := collectAllMemoryIDs(result)
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+
+	entitySet := make(map[string]bool)
+	for _, memID := range memoryIDs {
+		entities, err := k.store.GetMemoryEntities(ctx, memID)
+		if err != nil {
+			continue
+		}
+		for _, ent := range entities {
+			entitySet[ent.ID] = true
+		}
+	}
+
+	ids := make([]string, 0, len(entitySet))
+	for id := range entitySet {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// shouldSuppressTopicRepeat checks if the current signal's entities overlap >60%
+// with entities from recent act decisions (within 6h window).
+func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string) bool {
+	if len(currentEntities) == 0 {
+		return false
+	}
+
+	recentActs, err := k.store.GetRecentActDecisions(ctx, entityID, agentID, 6*time.Hour)
+	if err != nil || len(recentActs) == 0 {
+		return false
+	}
+
+	currentSet := make(map[string]bool)
+	for _, id := range currentEntities {
+		currentSet[id] = true
+	}
+
+	for _, act := range recentActs {
+		if len(act.TopicEntities) == 0 {
+			continue
+		}
+		overlap := 0
+		for _, id := range act.TopicEntities {
+			if currentSet[id] {
+				overlap++
+			}
+		}
+		if float64(overlap)/float64(len(currentEntities)) > 0.6 {
+			return true
+		}
+	}
+	return false
+}
+
+// calculateDeadlineProximity scores deadlines by how close they are.
+// Returns the max proximity score (higher = more urgent).
+func calculateDeadlineProximity(deadlines []*Memory) float64 {
+	maxScore := 0.0
+	now := time.Now()
+	for _, m := range deadlines {
+		if m.ExpiresAt == nil {
+			continue
+		}
+		hours := m.ExpiresAt.Sub(now).Hours()
+		if hours < 0 {
+			hours = 0.1 // overdue
+		}
+		score := 1.0 / math.Max(hours, 0.5)
+		if score > maxScore {
+			maxScore = score
+		}
+	}
+	return maxScore
+}
+
+// buildStateSnapshot captures current heartbeat state for delta detection.
+func buildStateSnapshot(result *HeartbeatResult) StateSnapshot {
+	snap := StateSnapshot{
+		GoalStatuses:         make(map[string]string),
+		RelationshipSilences: make(map[string]int),
+	}
+	for _, g := range result.GoalProgress {
+		snap.GoalStatuses[g.Plan.ID] = g.Status
+	}
+	for _, r := range result.Relationships {
+		snap.RelationshipSilences[r.Entity.ID] = r.DaysSilent
+	}
+	if result.Sentiment != nil {
+		snap.SentimentDirection = result.Sentiment.Direction
+	}
+	return snap
+}
+
+// goalStatusRank returns a numeric rank for goal status (higher = better).
+func goalStatusRank(status string) int {
+	switch status {
+	case "no_activity":
+		return 0
+	case "stalled":
+		return 1
+	case "at_risk":
+		return 2
+	case "on_track":
+		return 3
+	default:
+		return -1
+	}
+}
+
+// detectDeltas compares two state snapshots and returns positive changes.
+func detectDeltas(current, previous StateSnapshot) []PositiveDelta {
+	var deltas []PositiveDelta
+
+	// Goal improvements
+	for planID, currentStatus := range current.GoalStatuses {
+		prevStatus, exists := previous.GoalStatuses[planID]
+		if !exists {
+			continue
+		}
+		if goalStatusRank(currentStatus) > goalStatusRank(prevStatus) {
+			deltas = append(deltas, PositiveDelta{
+				Type:        "goal_improved",
+				Description: fmt.Sprintf("Goal moved from %s to %s", prevStatus, currentStatus),
+			})
+		}
+	}
+
+	// Entity re-engagement (was silent >7 days, now significantly less)
+	for entityID, currentSilent := range current.RelationshipSilences {
+		prevSilent, exists := previous.RelationshipSilences[entityID]
+		if exists && prevSilent > 7 && currentSilent < prevSilent/2 {
+			deltas = append(deltas, PositiveDelta{
+				Type:        "entity_reengaged",
+				Description: fmt.Sprintf("Re-engaged after %d days of silence", prevSilent),
+				EntityID:    entityID,
+			})
+		}
+	}
+
+	// Sentiment improvement
+	if previous.SentimentDirection == "declining" &&
+		(current.SentimentDirection == "stable" || current.SentimentDirection == "improving") {
+		deltas = append(deltas, PositiveDelta{
+			Type:        "sentiment_improved",
+			Description: fmt.Sprintf("Sentiment shifted from %s to %s", previous.SentimentDirection, current.SentimentDirection),
+		})
+	}
+
+	return deltas
+}
+
+// enrichSignalsWithGraph adds knowledge graph context to heartbeat signals.
+// For each signal memory, finds entity mentions and their 1-hop relationships,
+// producing context lines like "Alice (person) → works_at → ClientCo".
+func (k *Keyoku) enrichSignalsWithGraph(ctx context.Context, entityID string, result *HeartbeatResult) []string {
+	if k.engine == nil {
+		return nil
+	}
+	memoryIDs := collectAllMemoryIDs(result)
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+
+	graphEngine := k.engine.Graph()
+	if graphEngine == nil {
+		return nil
+	}
+
+	// Collect entities from signal memories
+	entityMap := make(map[string]*storage.Entity)
+	for _, memID := range memoryIDs {
+		entities, err := k.store.GetMemoryEntities(ctx, memID)
+		if err != nil {
+			continue
+		}
+		for _, ent := range entities {
+			entityMap[ent.ID] = ent
+		}
+	}
+
+	if len(entityMap) == 0 {
+		return nil
+	}
+
+	// For each unique entity, get 1-hop relationships
+	seen := make(map[string]bool)
+	var contextLines []string
+
+	for entID, ent := range entityMap {
+		edges, err := graphEngine.GetEntityNeighbors(ctx, entityID, entID)
+		if err != nil || len(edges) == 0 {
+			continue
+		}
+
+		for _, edge := range edges {
+			line := fmt.Sprintf("%s (%s) -[%s]-> %s (%s)",
+				ent.CanonicalName, ent.Type,
+				edge.Relationship.RelationshipType,
+				edge.TargetEntity.CanonicalName, edge.TargetEntity.Type)
+			if !seen[line] {
+				seen[line] = true
+				contextLines = append(contextLines, line)
+			}
+		}
+	}
+
+	return contextLines
 }
 
 // runLLMPrioritization runs the opt-in LLM prioritization on heartbeat results.

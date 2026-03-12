@@ -413,6 +413,11 @@ type HeartbeatAction struct {
 	LLMShouldAct      *bool    `db:"llm_should_act"`
 	SignalSummary     string    `db:"signal_summary"`
 	TotalSignals      int       `db:"total_signals"`
+
+	// v2: Intelligence fields
+	UserResponded *bool       `db:"user_responded"` // nil=unchecked, true/false after 2h window
+	TopicEntities StringSlice `db:"topic_entities"` // JSON array of entity IDs from signals
+	StateSnapshot string      `db:"state_snapshot"` // JSON of state metrics at time of decision
 }
 
 // AgentState represents a persistent state for an agent workflow.

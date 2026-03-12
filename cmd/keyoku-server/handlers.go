@@ -187,6 +187,12 @@ type behavioralPatternJSON struct {
 	Topics      []string `json:"topics,omitempty"`
 }
 
+type positiveDeltaJSON struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	EntityID    string `json:"entity_id,omitempty"`
+}
+
 type heartbeatContextResponse struct {
 	ShouldAct        bool                    `json:"should_act"`
 	Scheduled        []memoryJSON            `json:"scheduled"`
@@ -209,6 +215,12 @@ type heartbeatContextResponse struct {
 	RelationshipAlerts []relationshipAlertJSON  `json:"relationship_alerts,omitempty"`
 	KnowledgeGaps      []knowledgeGapJSON      `json:"knowledge_gaps,omitempty"`
 	BehavioralPatterns []behavioralPatternJSON  `json:"behavioral_patterns,omitempty"`
+
+	// v2: Intelligence metadata
+	ResponseRate    float64            `json:"response_rate,omitempty"`
+	ConfluenceScore int                `json:"confluence_score,omitempty"`
+	PositiveDeltas  []positiveDeltaJSON `json:"positive_deltas,omitempty"`
+	GraphContext    []string           `json:"graph_context,omitempty"`
 }
 
 type watcherStartRequest struct {
@@ -631,6 +643,18 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		})
 	}
 
+	// v2: Populate intelligence metadata
+	resp.ResponseRate = hbResult.ResponseRate
+	resp.ConfluenceScore = hbResult.ConfluenceScore
+	resp.GraphContext = hbResult.GraphContext
+	for _, d := range hbResult.PositiveDeltas {
+		resp.PositiveDeltas = append(resp.PositiveDeltas, positiveDeltaJSON{
+			Type:        d.Type,
+			Description: d.Description,
+			EntityID:    d.EntityID,
+		})
+	}
+
 	// 4. LLM analysis — only when engine decided to act (saves ~90% of LLM calls)
 	if req.Analyze && resp.ShouldAct {
 		provider := h.k.Provider()
@@ -706,6 +730,12 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				activitySummary = req.Query // fall back to query
 			}
 
+			// v2: Format positive deltas for LLM
+			var deltaStrs []string
+			for _, d := range hbResult.PositiveDeltas {
+				deltaStrs = append(deltaStrs, fmt.Sprintf("[%s] %s", d.Type, d.Description))
+			}
+
 			analysisResult, err := provider.AnalyzeHeartbeatContext(r.Context(), keyoku.HeartbeatAnalysisRequest{
 				ActivitySummary:    activitySummary,
 				Scheduled:          scheduled,
@@ -722,6 +752,8 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				RelationshipAlerts: relationshipStrs,
 				KnowledgeGaps:      knowledgeStrs,
 				BehavioralPatterns: patternStrs,
+				GraphContext:       hbResult.GraphContext,
+				PositiveDeltas:     deltaStrs,
 			})
 			if err == nil {
 				resp.Analysis = &heartbeatAnalysisJSON{

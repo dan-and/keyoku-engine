@@ -331,6 +331,10 @@ func (s *SQLiteStore) migrate() error {
 		`ALTER TABLE memories ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'`,
 		`ALTER TABLE entities ADD COLUMN team_id TEXT DEFAULT ''`,
 		`ALTER TABLE relationships ADD COLUMN team_id TEXT DEFAULT ''`,
+		// Heartbeat v2: intelligence fields
+		`ALTER TABLE heartbeat_actions ADD COLUMN user_responded INTEGER DEFAULT NULL`,
+		`ALTER TABLE heartbeat_actions ADD COLUMN topic_entities TEXT DEFAULT '[]'`,
+		`ALTER TABLE heartbeat_actions ADD COLUMN state_snapshot TEXT DEFAULT ''`,
 	}
 	for _, stmt := range alterStmts {
 		s.db.Exec(stmt) // ignore "duplicate column" errors
@@ -2713,28 +2717,54 @@ func (s *SQLiteStore) RecordHeartbeatAction(ctx context.Context, action *Heartbe
 		llmVal = &v
 	}
 
+	var userRespondedVal *int
+	if action.UserResponded != nil {
+		v := 0
+		if *action.UserResponded {
+			v = 1
+		}
+		userRespondedVal = &v
+	}
+
+	topicEntitiesJSON := "[]"
+	if len(action.TopicEntities) > 0 {
+		if v, err := action.TopicEntities.Value(); err == nil {
+			topicEntitiesJSON = v.(string)
+		}
+	}
+
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO heartbeat_actions (id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO heartbeat_actions (id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		action.ID, action.EntityID, action.AgentID, now, action.TriggerCategory,
 		action.SignalFingerprint, action.Decision, action.UrgencyTier,
-		llmVal, action.SignalSummary, action.TotalSignals)
+		llmVal, action.SignalSummary, action.TotalSignals,
+		userRespondedVal, topicEntitiesJSON, action.StateSnapshot)
 	return err
 }
 
 func (s *SQLiteStore) GetLastHeartbeatAction(ctx context.Context, entityID, agentID, decision string) (*HeartbeatAction, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot
 		FROM heartbeat_actions
 		WHERE entity_id = ? AND agent_id = ? AND decision = ?
 		ORDER BY acted_at DESC LIMIT 1`,
 		entityID, agentID, decision)
 
+	return s.scanHeartbeatAction(row)
+}
+
+// scanHeartbeatAction scans a single row into a HeartbeatAction.
+func (s *SQLiteStore) scanHeartbeatAction(row interface{ Scan(...any) error }) (*HeartbeatAction, error) {
 	var a HeartbeatAction
 	var actedStr string
 	var llmVal *int
+	var userRespondedVal *int
+	var topicEntitiesStr *string
+	var stateSnapshotStr *string
 	err := row.Scan(&a.ID, &a.EntityID, &a.AgentID, &actedStr, &a.TriggerCategory,
-		&a.SignalFingerprint, &a.Decision, &a.UrgencyTier, &llmVal, &a.SignalSummary, &a.TotalSignals)
+		&a.SignalFingerprint, &a.Decision, &a.UrgencyTier, &llmVal, &a.SignalSummary, &a.TotalSignals,
+		&userRespondedVal, &topicEntitiesStr, &stateSnapshotStr)
 	if err != nil {
 		return nil, err
 	}
@@ -2742,6 +2772,16 @@ func (s *SQLiteStore) GetLastHeartbeatAction(ctx context.Context, entityID, agen
 	if llmVal != nil {
 		v := *llmVal == 1
 		a.LLMShouldAct = &v
+	}
+	if userRespondedVal != nil {
+		v := *userRespondedVal == 1
+		a.UserResponded = &v
+	}
+	if topicEntitiesStr != nil {
+		_ = a.TopicEntities.Scan(*topicEntitiesStr)
+	}
+	if stateSnapshotStr != nil {
+		a.StateSnapshot = *stateSnapshotStr
 	}
 	return &a, nil
 }
@@ -2789,4 +2829,85 @@ func (s *SQLiteStore) GetMessageHourDistribution(ctx context.Context, entityID s
 		dist[t.Hour()]++
 	}
 	return dist, rows.Err()
+}
+
+// --- Heartbeat v2: Intelligence Methods ---
+
+func (s *SQLiteStore) GetHeartbeatActionsForResponseCheck(ctx context.Context, entityID string, minAge time.Duration) ([]*HeartbeatAction, error) {
+	cutoff := time.Now().UTC().Add(-minAge).Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot
+		FROM heartbeat_actions
+		WHERE entity_id = ? AND decision = 'act' AND user_responded IS NULL AND acted_at < ?
+		ORDER BY acted_at DESC LIMIT 20`,
+		entityID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var actions []*HeartbeatAction
+	for rows.Next() {
+		a, err := s.scanHeartbeatAction(rows)
+		if err != nil {
+			continue
+		}
+		actions = append(actions, a)
+	}
+	return actions, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateHeartbeatActionResponse(ctx context.Context, actionID string, responded bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val := 0
+	if responded {
+		val = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE heartbeat_actions SET user_responded = ? WHERE id = ?`,
+		val, actionID)
+	return err
+}
+
+func (s *SQLiteStore) GetRecentActDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error) {
+	cutoff := time.Now().UTC().Add(-since).Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot
+		FROM heartbeat_actions
+		WHERE entity_id = ? AND agent_id = ? AND decision = 'act' AND acted_at > ?
+		ORDER BY acted_at DESC`,
+		entityID, agentID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var actions []*HeartbeatAction
+	for rows.Next() {
+		a, err := s.scanHeartbeatAction(rows)
+		if err != nil {
+			continue
+		}
+		actions = append(actions, a)
+	}
+	return actions, rows.Err()
+}
+
+func (s *SQLiteStore) GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	var total, responded int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN user_responded = 1 THEN 1 ELSE 0 END), 0)
+		FROM heartbeat_actions
+		WHERE entity_id = ? AND agent_id = ? AND decision = 'act' AND user_responded IS NOT NULL AND acted_at > ?`,
+		entityID, agentID, cutoff).Scan(&total, &responded)
+	if err != nil {
+		return 0, 0, err
+	}
+	if total == 0 {
+		return 1.0, 0, nil // no data = assume responsive
+	}
+	return float64(responded) / float64(total), total, nil
 }
