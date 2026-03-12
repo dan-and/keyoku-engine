@@ -127,6 +127,21 @@ type Store interface {
 	GetRecentActDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error)
 	GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) // rate, total, error
 
+	// Content rotation tracking
+	RecordSurfacedMemories(ctx context.Context, entityID, agentID string, memoryIDs []string) error
+	GetRecentlySurfacedMemoryIDs(ctx context.Context, entityID, agentID string, since time.Duration) ([]string, error)
+	CleanupOldSurfacedMemories(ctx context.Context, olderThan time.Duration) error
+
+	// Heartbeat message history (what the AI actually said)
+	RecordHeartbeatMessage(ctx context.Context, msg *HeartbeatMessage) error
+	GetRecentHeartbeatMessages(ctx context.Context, entityID, agentID string, limit int) ([]*HeartbeatMessage, error)
+
+	// Topic escalation tracking
+	UpsertTopicSurfacing(ctx context.Context, surfacing *TopicSurfacing) error
+	GetTopicSurfacing(ctx context.Context, entityID, agentID, topicHash string) (*TopicSurfacing, error)
+	GetActiveTopicSurfacings(ctx context.Context, entityID, agentID string, limit int) ([]*TopicSurfacing, error)
+	MarkTopicDropped(ctx context.Context, entityID, agentID, topicHash string) error
+
 	// Aggregation & Sampling (for reporting at scale)
 	AggregateStats(ctx context.Context, entityID string) (*AggregatedStats, error)
 	SampleMemories(ctx context.Context, entityID string, limit int) ([]*Memory, error)

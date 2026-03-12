@@ -97,6 +97,7 @@ func main() {
 	// Heartbeat
 	mux.HandleFunc("POST /api/v1/heartbeat/check", handlers.HandleHeartbeatCheck)
 	mux.HandleFunc("POST /api/v1/heartbeat/context", handlers.HandleHeartbeatContext)
+	mux.HandleFunc("POST /api/v1/heartbeat/record-message", handlers.HandleRecordHeartbeatMessage)
 
 	// Watcher
 	mux.HandleFunc("POST /api/v1/watcher/start", handlers.HandleWatcherStart)

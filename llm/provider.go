@@ -438,6 +438,15 @@ const heartbeatAnalysisPrompt = `You are an AI agent's memory and planning syste
 ### Positive Changes (since last heartbeat)
 %s
 
+### Time of Day
+%s
+
+### Escalation Level
+%s
+
+### Recent Heartbeat Messages (DO NOT repeat these)
+%s
+
 ## Instructions
 Cross-reference the agent's current activity with ALL signals. You are a fully autonomous personal assistant — think holistically:
 
@@ -449,6 +458,9 @@ Cross-reference the agent's current activity with ALL signals. You are a fully a
 6. **Knowledge Gaps**: Surface unanswered questions as clarifying prompts.
 7. **Knowledge Graph**: Use entity relationships to understand the full context of each signal. A deadline about "Project X" with graph context showing "Alice works_at ClientCo, ClientCo contracted ProjectX" tells you WHO is affected and WHY it matters. Reference people and organizations by name.
 8. **Positive Changes**: Acknowledge improvements! If a goal moved from "at_risk" to "on_track", mention it positively. If a silent stakeholder re-engaged, note it. This makes you feel empathetic and aware, not just alert-driven.
+9. **Time of Day**: Adjust tone and verbosity. Morning = energetic, evening = brief, late_night/quiet = only if truly urgent.
+10. **Escalation**: If escalation level > 1, you've mentioned this before. Level 2 = be more direct. Level 3 = offer specific help. Level 4+ = drop it unless urgent.
+11. **Dedup**: NEVER repeat or paraphrase recent heartbeat messages. Say something new or say nothing.
 
 Tailor your response to the autonomy level:
 - observe: action_brief = observations, user_facing = "FYI: ..." informational notes
@@ -507,6 +519,14 @@ func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
 		formatList(req.KnowledgeGaps),
 		formatList(req.GraphContext),
 		formatList(req.PositiveDeltas),
+		formatSingle(req.TimePeriod),
+		func() string {
+			if req.EscalationLevel <= 1 {
+				return "1 (first mention — casual)"
+			}
+			return fmt.Sprintf("%d", req.EscalationLevel)
+		}(),
+		formatList(req.RecentMessages),
 	)
 }
 

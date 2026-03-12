@@ -420,6 +420,40 @@ type HeartbeatAction struct {
 	StateSnapshot string      `db:"state_snapshot"` // JSON of state metrics at time of decision
 }
 
+// SurfacedMemory tracks when a specific memory was included in a heartbeat message.
+type SurfacedMemory struct {
+	ID         string    `db:"id"`
+	EntityID   string    `db:"entity_id"`
+	AgentID    string    `db:"agent_id"`
+	MemoryID   string    `db:"memory_id"`
+	SurfacedAt time.Time `db:"surfaced_at"`
+}
+
+// TopicSurfacing tracks how many times a topic has been mentioned in heartbeat messages.
+// Used for escalation: casual → direct → offer help → drop.
+type TopicSurfacing struct {
+	ID            string     `db:"id"`
+	EntityID      string     `db:"entity_id"`
+	AgentID       string     `db:"agent_id"`
+	TopicHash     string     `db:"topic_hash"`
+	TopicLabel    string     `db:"topic_label"`
+	TimesSurfaced int        `db:"times_surfaced"`
+	LastSurfacedAt time.Time `db:"last_surfaced_at"`
+	UserResponded bool       `db:"user_responded"`
+	DroppedAt     *time.Time `db:"dropped_at"`
+}
+
+// HeartbeatMessage stores the actual message text sent in a heartbeat.
+// Used to prevent repetition and provide "recent messages" context.
+type HeartbeatMessage struct {
+	ID        string    `db:"id"`
+	EntityID  string    `db:"entity_id"`
+	AgentID   string    `db:"agent_id"`
+	ActionID  string    `db:"action_id"`
+	Message   string    `db:"message"`
+	CreatedAt time.Time `db:"created_at"`
+}
+
 // AgentState represents a persistent state for an agent workflow.
 type AgentState struct {
 	ID              string         `db:"id"`

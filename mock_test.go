@@ -285,8 +285,17 @@ func (m *testStore) GetHeartbeatActionsForResponseCheck(_ context.Context, _ str
 func (m *testStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _ bool) error { return nil }
 func (m *testStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
 func (m *testStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) { return 1.0, 0, nil }
+func (m *testStore) RecordSurfacedMemories(_ context.Context, _, _ string, _ []string) error { return nil }
+func (m *testStore) GetRecentlySurfacedMemoryIDs(_ context.Context, _, _ string, _ time.Duration) ([]string, error) { return nil, nil }
+func (m *testStore) CleanupOldSurfacedMemories(_ context.Context, _ time.Duration) error { return nil }
+func (m *testStore) UpsertTopicSurfacing(_ context.Context, _ *storage.TopicSurfacing) error { return nil }
+func (m *testStore) GetTopicSurfacing(_ context.Context, _, _, _ string) (*storage.TopicSurfacing, error) { return nil, nil }
+func (m *testStore) GetActiveTopicSurfacings(_ context.Context, _, _ string, _ int) ([]*storage.TopicSurfacing, error) { return nil, nil }
+func (m *testStore) MarkTopicDropped(_ context.Context, _, _, _ string) error { return nil }
+func (m *testStore) RecordHeartbeatMessage(_ context.Context, _ *storage.HeartbeatMessage) error { return nil }
+func (m *testStore) GetRecentHeartbeatMessages(_ context.Context, _, _ string, _ int) ([]*storage.HeartbeatMessage, error) { return nil, nil }
 func (m *testStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
-func (m *testStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
+func (m *testStore) GetMemoryCount(_ context.Context) (int, error) { return 100, nil }
 func (m *testStore) Close() error {
 	if m.closeFn != nil { return m.closeFn() }; return nil
 }

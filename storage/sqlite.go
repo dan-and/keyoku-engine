@@ -322,6 +322,41 @@ func (s *SQLiteStore) migrate() error {
 			total_signals INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_hb_actions_entity ON heartbeat_actions(entity_id, agent_id, acted_at DESC)`,
+
+		// Content rotation tracking (which memories were surfaced in heartbeats)
+		`CREATE TABLE IF NOT EXISTS surfaced_memories (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			memory_id TEXT NOT NULL,
+			surfaced_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_surfaced_entity ON surfaced_memories(entity_id, agent_id, surfaced_at DESC)`,
+
+		// Topic escalation tracking (how many times a topic has been surfaced)
+		`CREATE TABLE IF NOT EXISTS topic_surfacings (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			topic_hash TEXT NOT NULL,
+			topic_label TEXT NOT NULL DEFAULT '',
+			times_surfaced INTEGER NOT NULL DEFAULT 1,
+			last_surfaced_at TEXT NOT NULL DEFAULT (datetime('now')),
+			user_responded INTEGER NOT NULL DEFAULT 0,
+			dropped_at TEXT
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_topic_entity ON topic_surfacings(entity_id, agent_id, topic_hash)`,
+
+		// Heartbeat message history (what the AI actually said)
+		`CREATE TABLE IF NOT EXISTS heartbeat_messages (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			action_id TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hb_messages_entity ON heartbeat_messages(entity_id, agent_id, created_at DESC)`,
 	}
 
 	for _, stmt := range stmts {
@@ -2956,4 +2991,179 @@ func (s *SQLiteStore) GetResponseRate(ctx context.Context, entityID, agentID str
 		return 1.0, 0, nil // no data = assume responsive
 	}
 	return float64(responded) / float64(total), total, nil
+}
+
+// --- Content rotation (surfaced memory tracking) ---
+
+func (s *SQLiteStore) RecordSurfacedMemories(ctx context.Context, entityID, agentID string, memoryIDs []string) error {
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO surfaced_memories (id, entity_id, agent_id, memory_id, surfaced_at)
+		VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, mid := range memoryIDs {
+		id := ulid.Make().String()
+		if _, err := stmt.ExecContext(ctx, id, entityID, agentID, mid, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GetRecentlySurfacedMemoryIDs(ctx context.Context, entityID, agentID string, since time.Duration) ([]string, error) {
+	cutoff := time.Now().UTC().Add(-since).Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT memory_id FROM surfaced_memories
+		WHERE entity_id = ? AND agent_id = ? AND surfaced_at > ?`,
+		entityID, agentID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *SQLiteStore) CleanupOldSurfacedMemories(ctx context.Context, olderThan time.Duration) error {
+	cutoff := time.Now().UTC().Add(-olderThan).Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM surfaced_memories WHERE surfaced_at < ?`, cutoff)
+	return err
+}
+
+// --- Topic escalation tracking ---
+
+func (s *SQLiteStore) UpsertTopicSurfacing(ctx context.Context, surfacing *TopicSurfacing) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if surfacing.ID == "" {
+		surfacing.ID = ulid.Make().String()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO topic_surfacings (id, entity_id, agent_id, topic_hash, topic_label, times_surfaced, last_surfaced_at, user_responded)
+		VALUES (?, ?, ?, ?, ?, 1, ?, 0)
+		ON CONFLICT(entity_id, agent_id, topic_hash) DO UPDATE SET
+			times_surfaced = times_surfaced + 1,
+			last_surfaced_at = ?,
+			topic_label = CASE WHEN excluded.topic_label != '' THEN excluded.topic_label ELSE topic_label END`,
+		surfacing.ID, surfacing.EntityID, surfacing.AgentID, surfacing.TopicHash, surfacing.TopicLabel, now, now)
+	return err
+}
+
+func (s *SQLiteStore) GetTopicSurfacing(ctx context.Context, entityID, agentID, topicHash string) (*TopicSurfacing, error) {
+	var ts TopicSurfacing
+	var lastSurfacedStr string
+	var droppedStr *string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, topic_hash, topic_label, times_surfaced, last_surfaced_at, user_responded, dropped_at
+		FROM topic_surfacings WHERE entity_id = ? AND agent_id = ? AND topic_hash = ?`,
+		entityID, agentID, topicHash).Scan(
+		&ts.ID, &ts.EntityID, &ts.AgentID, &ts.TopicHash, &ts.TopicLabel,
+		&ts.TimesSurfaced, &lastSurfacedStr, &ts.UserResponded, &droppedStr)
+	if err != nil {
+		return nil, err
+	}
+	ts.LastSurfacedAt, _ = time.Parse(time.RFC3339, lastSurfacedStr)
+	if droppedStr != nil {
+		t, _ := time.Parse(time.RFC3339, *droppedStr)
+		ts.DroppedAt = &t
+	}
+	return &ts, nil
+}
+
+func (s *SQLiteStore) GetActiveTopicSurfacings(ctx context.Context, entityID, agentID string, limit int) ([]*TopicSurfacing, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, topic_hash, topic_label, times_surfaced, last_surfaced_at, user_responded, dropped_at
+		FROM topic_surfacings
+		WHERE entity_id = ? AND agent_id = ? AND dropped_at IS NULL
+		ORDER BY last_surfaced_at DESC LIMIT ?`,
+		entityID, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*TopicSurfacing
+	for rows.Next() {
+		var ts TopicSurfacing
+		var lastSurfacedStr string
+		var droppedStr *string
+		if err := rows.Scan(&ts.ID, &ts.EntityID, &ts.AgentID, &ts.TopicHash, &ts.TopicLabel,
+			&ts.TimesSurfaced, &lastSurfacedStr, &ts.UserResponded, &droppedStr); err != nil {
+			return nil, err
+		}
+		ts.LastSurfacedAt, _ = time.Parse(time.RFC3339, lastSurfacedStr)
+		if droppedStr != nil {
+			t, _ := time.Parse(time.RFC3339, *droppedStr)
+			ts.DroppedAt = &t
+		}
+		results = append(results, &ts)
+	}
+	return results, rows.Err()
+}
+
+func (s *SQLiteStore) MarkTopicDropped(ctx context.Context, entityID, agentID, topicHash string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE topic_surfacings SET dropped_at = ? WHERE entity_id = ? AND agent_id = ? AND topic_hash = ?`,
+		now, entityID, agentID, topicHash)
+	return err
+}
+
+// --- Heartbeat message history ---
+
+func (s *SQLiteStore) RecordHeartbeatMessage(ctx context.Context, msg *HeartbeatMessage) error {
+	if msg.ID == "" {
+		msg.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO heartbeat_messages (id, entity_id, agent_id, action_id, message, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.EntityID, msg.AgentID, msg.ActionID, msg.Message, now)
+	return err
+}
+
+func (s *SQLiteStore) GetRecentHeartbeatMessages(ctx context.Context, entityID, agentID string, limit int) ([]*HeartbeatMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, action_id, message, created_at
+		FROM heartbeat_messages
+		WHERE entity_id = ? AND agent_id = ?
+		ORDER BY created_at DESC LIMIT ?`,
+		entityID, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*HeartbeatMessage
+	for rows.Next() {
+		var m HeartbeatMessage
+		var createdStr string
+		if err := rows.Scan(&m.ID, &m.EntityID, &m.AgentID, &m.ActionID, &m.Message, &createdStr); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		msgs = append(msgs, &m)
+	}
+	return msgs, rows.Err()
 }

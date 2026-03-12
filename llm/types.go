@@ -172,6 +172,11 @@ type HeartbeatAnalysisRequest struct {
 	// v2: Graph enrichment and delta detection
 	GraphContext    []string `json:"graph_context,omitempty"`    // Entity relationship context from knowledge graph
 	PositiveDeltas []string `json:"positive_deltas,omitempty"` // Detected positive changes since last heartbeat
+
+	// v3: Time, escalation, and dedup awareness
+	TimePeriod      string   `json:"time_period,omitempty"`      // "morning", "working", "evening", "late_night", "quiet"
+	EscalationLevel int      `json:"escalation_level,omitempty"` // 1=casual, 2=direct, 3=offer help, 4+=dropped
+	RecentMessages  []string `json:"recent_messages,omitempty"`  // Last N heartbeat messages for dedup
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.

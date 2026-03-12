@@ -224,6 +224,11 @@ func (k *Keyoku) Provider() llm.Provider {
 	return k.provider
 }
 
+// Store returns the underlying storage backend.
+func (k *Keyoku) Store() storage.Store {
+	return k.store
+}
+
 // SetStore sets the storage backend. Used for testing or custom storage.
 func (k *Keyoku) SetStore(store storage.Store) {
 	k.store = store

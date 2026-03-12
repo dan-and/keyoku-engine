@@ -15,6 +15,7 @@ import (
 	"time"
 
 	keyoku "github.com/keyoku-ai/keyoku-engine"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // Handlers wraps the Keyoku instance and provides HTTP handlers.
@@ -224,11 +225,16 @@ type heartbeatContextResponse struct {
 	// Conversation state
 	InConversation bool `json:"in_conversation,omitempty"`
 
+	// Time and escalation awareness
+	TimePeriod      string `json:"time_period,omitempty"`       // "morning", "working", "evening", "late_night", "quiet"
+	EscalationLevel int    `json:"escalation_level,omitempty"` // 1=casual, 2=direct, 3=offer help, 4+=dropped
+
 	// v2: Intelligence metadata
 	ResponseRate    float64            `json:"response_rate,omitempty"`
 	ConfluenceScore int                `json:"confluence_score,omitempty"`
 	PositiveDeltas  []positiveDeltaJSON `json:"positive_deltas,omitempty"`
 	GraphContext    []string           `json:"graph_context,omitempty"`
+	RecentMessages  []string           `json:"recent_messages,omitempty"` // last N heartbeat messages (for dedup)
 }
 
 type watcherStartRequest struct {
@@ -698,9 +704,23 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 
 	// v2: Populate intelligence metadata
 	resp.InConversation = hbResult.InConversation
+	resp.TimePeriod = hbResult.TimePeriod
+	resp.EscalationLevel = hbResult.EscalationLevel
 	resp.ResponseRate = hbResult.ResponseRate
 	resp.ConfluenceScore = hbResult.ConfluenceScore
 	resp.GraphContext = hbResult.GraphContext
+
+	// Populate recent heartbeat messages for dedup
+	agentIDForMsgs := req.AgentID
+	if agentIDForMsgs == "" {
+		agentIDForMsgs = "default"
+	}
+	recentMsgs, msgErr := h.k.Store().GetRecentHeartbeatMessages(r.Context(), req.EntityID, agentIDForMsgs, 5)
+	if msgErr == nil {
+		for _, m := range recentMsgs {
+			resp.RecentMessages = append(resp.RecentMessages, m.Message)
+		}
+	}
 	for _, d := range hbResult.PositiveDeltas {
 		resp.PositiveDeltas = append(resp.PositiveDeltas, positiveDeltaJSON{
 			Type:        d.Type,
@@ -808,6 +828,9 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				BehavioralPatterns: patternStrs,
 				GraphContext:       hbResult.GraphContext,
 				PositiveDeltas:     deltaStrs,
+				TimePeriod:         hbResult.TimePeriod,
+				EscalationLevel:    hbResult.EscalationLevel,
+				RecentMessages:     resp.RecentMessages,
 			})
 			if err == nil {
 				resp.Analysis = &heartbeatAnalysisJSON{
@@ -830,6 +853,38 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleRecordHeartbeatMessage stores the actual message text sent in a heartbeat.
+func (h *Handlers) HandleRecordHeartbeatMessage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		EntityID string `json:"entity_id"`
+		AgentID  string `json:"agent_id"`
+		ActionID string `json:"action_id"`
+		Message  string `json:"message"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.EntityID == "" || req.Message == "" {
+		writeError(w, http.StatusBadRequest, "entity_id and message are required")
+		return
+	}
+	if req.AgentID == "" {
+		req.AgentID = "default"
+	}
+	msg := &storage.HeartbeatMessage{
+		EntityID: req.EntityID,
+		AgentID:  req.AgentID,
+		ActionID: req.ActionID,
+		Message:  req.Message,
+	}
+	if err := h.k.Store().RecordHeartbeatMessage(r.Context(), msg); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record message: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "id": msg.ID})
 }
 
 // HandleWatcherStart starts the proactive watcher.

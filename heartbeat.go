@@ -48,8 +48,10 @@ type HeartbeatResult struct {
 	SignalFingerprint  string // for debugging
 	NudgeContext       string // memory content selected for nudge
 
-	// Conversation state
-	InConversation bool // Whether user is actively in conversation
+	// Time awareness
+	TimePeriod      string // "morning", "working", "evening", "late_night", "quiet"
+	EscalationLevel int    // 1=casual, 2=direct, 3=offer help, 4+=dropped
+	InConversation  bool   // Whether user is actively in conversation
 
 	// v2: Intelligence metadata
 	PositiveDeltas  []PositiveDelta // Detected positive changes since last heartbeat
@@ -98,7 +100,8 @@ var signalTierMap = map[HeartbeatCheckType]string{
 	CheckDecaying:     TierLow,
 	CheckSentiment:    TierLow,
 	CheckRelationship: TierLow,
-	CheckPatterns:     TierLow,
+	CheckPatterns:        TierLow,
+	CheckPositiveDeltas: TierNormal,
 }
 
 // tierPriority for comparison (lower = more urgent).
@@ -127,11 +130,12 @@ var confluenceThreshold = map[string]int{
 // HeartbeatParams holds configurable parameters for heartbeat evaluation.
 // Defaults are set per autonomy level; individual fields can be overridden.
 type HeartbeatParams struct {
-	SignalCooldownNormal time.Duration
-	SignalCooldownLow    time.Duration
-	NudgeAfterSilence    time.Duration // 0 = disabled
-	MaxNudgesPerDay      int           // safety cap per 24h
-	NudgeMaxInterval     time.Duration // cap for backoff decay (e.g. 48h)
+	SignalCooldownNormal   time.Duration
+	SignalCooldownElevated time.Duration // cooldown for elevated-tier signals
+	SignalCooldownLow      time.Duration
+	NudgeAfterSilence      time.Duration // 0 = disabled
+	MaxNudgesPerDay        int           // safety cap per 24h
+	NudgeMaxInterval       time.Duration // cap for backoff decay (e.g. 48h)
 }
 
 // DefaultHeartbeatParams returns defaults based on autonomy level.
@@ -139,27 +143,30 @@ func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
 	switch autonomy {
 	case "observe":
 		return HeartbeatParams{
-			SignalCooldownNormal: 4 * time.Hour,
-			SignalCooldownLow:    8 * time.Hour,
-			NudgeAfterSilence:    0, // disabled
-			MaxNudgesPerDay:      0,
-			NudgeMaxInterval: 12 * time.Hour,
+			SignalCooldownNormal:   4 * time.Hour,
+			SignalCooldownElevated: 2 * time.Hour,
+			SignalCooldownLow:      8 * time.Hour,
+			NudgeAfterSilence:     0, // disabled
+			MaxNudgesPerDay:       0,
+			NudgeMaxInterval:      12 * time.Hour,
 		}
 	case "act":
 		return HeartbeatParams{
-			SignalCooldownNormal: 10 * time.Minute,
-			SignalCooldownLow:    30 * time.Minute,
-			NudgeAfterSilence:    30 * time.Minute,
-			MaxNudgesPerDay:      24,
-			NudgeMaxInterval: 48 * time.Hour,
+			SignalCooldownNormal:   10 * time.Minute,
+			SignalCooldownElevated: 5 * time.Minute,
+			SignalCooldownLow:      30 * time.Minute,
+			NudgeAfterSilence:     30 * time.Minute,
+			MaxNudgesPerDay:       24,
+			NudgeMaxInterval:      48 * time.Hour,
 		}
 	default: // "suggest"
 		return HeartbeatParams{
-			SignalCooldownNormal: 2 * time.Hour,
-			SignalCooldownLow:    4 * time.Hour,
-			NudgeAfterSilence:    4 * time.Hour,
-			MaxNudgesPerDay:      3,
-			NudgeMaxInterval: 24 * time.Hour,
+			SignalCooldownNormal:   2 * time.Hour,
+			SignalCooldownElevated: 30 * time.Minute,
+			SignalCooldownLow:      4 * time.Hour,
+			NudgeAfterSilence:     4 * time.Hour,
+			MaxNudgesPerDay:       3,
+			NudgeMaxInterval:      24 * time.Hour,
 		}
 	}
 }
@@ -175,20 +182,115 @@ var pstLocation = func() *time.Location {
 	return loc
 }()
 
-// isQuietHour checks if the current time falls within the configured quiet window.
-// Returns false if quiet hours are disabled (default).
+// TimePeriod constants for time-of-day awareness.
+const (
+	PeriodMorning   = "morning"    // 7-10: proactive window
+	PeriodWorking   = "working"    // 10-17: normal operations
+	PeriodEvening   = "evening"    // 17-21: wind-down, less proactive
+	PeriodLateNight = "late_night" // 21-23: minimal interruption
+	PeriodQuiet     = "quiet"      // 23-7: only immediate urgency
+)
+
+// currentTimePeriod returns the current time-of-day tier.
+// Uses the configured quiet hours timezone, falling back to PST.
+func (k *Keyoku) currentTimePeriod() string {
+	loc := pstLocation
+	if k.quietHours.Location != nil {
+		loc = k.quietHours.Location
+	}
+	hour := time.Now().In(loc).Hour()
+	switch {
+	case hour >= 7 && hour < 10:
+		return PeriodMorning
+	case hour >= 10 && hour < 17:
+		return PeriodWorking
+	case hour >= 17 && hour < 21:
+		return PeriodEvening
+	case hour >= 21 && hour < 23:
+		return PeriodLateNight
+	default: // 23-7
+		return PeriodQuiet
+	}
+}
+
+// timePeriodMinTier returns the minimum urgency tier required for a time period.
+func timePeriodMinTier(period string) string {
+	switch period {
+	case PeriodMorning, PeriodWorking:
+		return TierLow // everything allowed
+	case PeriodEvening:
+		return TierNormal
+	case PeriodLateNight:
+		return TierElevated
+	case PeriodQuiet:
+		return TierImmediate
+	default:
+		return TierLow
+	}
+}
+
+// timePeriodCooldownMultiplier returns the cooldown multiplier for a time period.
+func timePeriodCooldownMultiplier(period string) float64 {
+	switch period {
+	case PeriodMorning:
+		return 0.5
+	case PeriodWorking:
+		return 1.0
+	case PeriodEvening:
+		return 1.5
+	case PeriodLateNight:
+		return 3.0
+	case PeriodQuiet:
+		return 10.0
+	default:
+		return 1.0
+	}
+}
+
+// tierRank returns a numeric rank for urgency tier comparison.
+func tierRank(tier string) int {
+	switch tier {
+	case TierImmediate:
+		return 4
+	case TierElevated:
+		return 3
+	case TierNormal:
+		return 2
+	case TierLow:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// isQuietHour checks if the current time falls within the quiet period.
+// Kept for backward compatibility — now delegates to currentTimePeriod.
 func (k *Keyoku) isQuietHour() bool {
-	if !k.quietHours.Enabled {
-		return false
+	return k.currentTimePeriod() == PeriodQuiet
+}
+
+// isUserTypicallyActive checks if the user has historically been active at the current hour.
+// Returns true if current hour accounts for >= 2% of total message volume over the last 14 days,
+// or if there's insufficient data to determine a pattern.
+func (k *Keyoku) isUserTypicallyActive(ctx context.Context, entityID string) bool {
+	dist, err := k.store.GetMessageHourDistribution(ctx, entityID, 14)
+	if err != nil || len(dist) == 0 {
+		return true // no data = assume active
 	}
-	hour := time.Now().In(k.quietHours.Location).Hour()
-	start := k.quietHours.Start
-	end := k.quietHours.End
-	if start > end {
-		// Wraps midnight: e.g., 23:00 - 07:00
-		return hour >= start || hour < end
+	total := 0
+	for _, count := range dist {
+		total += count
 	}
-	return hour >= start && hour < end
+	if total < 20 {
+		return true // too few messages to determine pattern
+	}
+	loc := pstLocation
+	if k.quietHours.Location != nil {
+		loc = k.quietHours.Location
+	}
+	currentHour := time.Now().In(loc).Hour()
+	hourCount := dist[currentHour]
+	return float64(hourCount)/float64(total) >= 0.02
 }
 
 // GoalProgressItem tracks a plan's progress based on related activity memories.
@@ -289,7 +391,8 @@ const (
 	CheckSentiment    HeartbeatCheckType = "sentiment"
 	CheckRelationship HeartbeatCheckType = "relationship"
 	CheckKnowledge    HeartbeatCheckType = "knowledge_gaps"
-	CheckPatterns     HeartbeatCheckType = "patterns"
+	CheckPatterns        HeartbeatCheckType = "patterns"
+	CheckPositiveDeltas  HeartbeatCheckType = "positive_deltas"
 )
 
 var allChecks = []HeartbeatCheckType{
@@ -369,7 +472,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 	cfg := &heartbeatConfig{
 		deadlineWindow:  24 * time.Hour,
 		decayThreshold:  0.4,
-		importanceFloor: 0.7,
+		importanceFloor: 0.4,
 		maxResults:      20,
 		checks:          allChecks,
 	}
@@ -628,6 +731,15 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				result.GoalProgress = append(result.GoalProgress, item)
 			}
 		}
+
+		// Filter out no_activity goals — they're noise, not signals
+		var filteredGoals []GoalProgressItem
+		for _, g := range result.GoalProgress {
+			if g.Status != "no_activity" {
+				filteredGoals = append(filteredGoals, g)
+			}
+		}
+		result.GoalProgress = filteredGoals
 	}
 
 	// 8. CONTEXT CONTINUITY — Detect interrupted sessions
@@ -645,11 +757,15 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			newest := recent[0]
 			sessionAge := time.Since(newest.CreatedAt)
 
-			if sessionAge < 48*time.Hour {
-				// Check if there are unresolved plans/activities
+			if sessionAge < 12*time.Hour {
+				// Session-window filter: only count memories within 2h of the newest as "same session"
+				sessionWindow := 2 * time.Hour
 				hasUnresolved := false
 				var lastTopics []string
 				for _, m := range recent {
+					if newest.CreatedAt.Sub(m.CreatedAt) > sessionWindow {
+						continue // not part of the same session
+					}
 					if m.Type == storage.TypeActivity || m.Type == storage.TypePlan {
 						hasUnresolved = true
 						if len(lastTopics) < 3 {
@@ -841,6 +957,20 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		result.ByAgent = buildByAgentAttribution(result)
 	}
 
+	// Detect positive deltas before decision (so they can trigger action)
+	snapshot := buildStateSnapshot(result)
+	agentIDForDelta := cfg.agentID
+	if agentIDForDelta == "" {
+		agentIDForDelta = "default"
+	}
+	lastAct, deltaErr := k.store.GetLastHeartbeatAction(ctx, entityID, agentIDForDelta, "act")
+	if deltaErr == nil && lastAct != nil && lastAct.StateSnapshot != "" {
+		var prevSnapshot StateSnapshot
+		if json.Unmarshal([]byte(lastAct.StateSnapshot), &prevSnapshot) == nil {
+			result.PositiveDeltas = detectDeltas(snapshot, prevSnapshot)
+		}
+	}
+
 	// Build summary regardless of decision (used by LLM analysis if enabled)
 	result.Summary = buildSummary(result)
 
@@ -869,6 +999,9 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		if p.SignalCooldownNormal > 0 {
 			params.SignalCooldownNormal = p.SignalCooldownNormal
 		}
+		if p.SignalCooldownElevated > 0 {
+			params.SignalCooldownElevated = p.SignalCooldownElevated
+		}
 		if p.SignalCooldownLow > 0 {
 			params.SignalCooldownLow = p.SignalCooldownLow
 		}
@@ -881,6 +1014,17 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		if p.NudgeMaxInterval > 0 {
 			params.NudgeMaxInterval = p.NudgeMaxInterval
 		}
+	}
+
+	// 0. First-contact mode — very few memories means this is a new user
+	memCount, countErr := k.store.GetMemoryCount(ctx)
+	if countErr == nil && memCount < 5 {
+		result.ShouldAct = true
+		result.DecisionReason = "first_contact"
+		result.HighestUrgencyTier = TierNormal
+		result.TimePeriod = k.currentTimePeriod()
+		k.recordDecision(ctx, entityID, agentID, "first_contact", "", "first_contact", TierNormal, 0)
+		return
 	}
 
 	// Background: check response tracking for previous actions + cleanup
@@ -899,13 +1043,41 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 2. Quiet hours (PST) — suppress non-immediate
-	if k.isQuietHour() {
-		hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
-		if !hasImmediate {
+	// 2. Time-of-day awareness — filter signals by minimum urgency tier
+	period := k.currentTimePeriod()
+	result.TimePeriod = period
+	minTier := timePeriodMinTier(period)
+	if tierRank(minTier) > tierRank(TierLow) {
+		// Check if any signal meets the minimum tier for this time period
+		activeSignals := k.classifyActiveSignals(result)
+		highestSignalTier := TierLow
+		for _, tier := range activeSignals {
+			if tierRank(tier) > tierRank(highestSignalTier) {
+				highestSignalTier = tier
+			}
+		}
+		if tierRank(highestSignalTier) < tierRank(minTier) {
 			result.ShouldAct = false
-			result.DecisionReason = "suppress_quiet"
-			k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_quiet", TierLow, 0)
+			result.DecisionReason = "suppress_time_period"
+			k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_time_period", highestSignalTier, len(activeSignals))
+			return
+		}
+	}
+
+	// 2b. Conversation rhythm — suppress if user is never active at this hour
+	if !k.isUserTypicallyActive(ctx, entityID) {
+		// Only suppress if signals aren't elevated+
+		activeSignalsForRhythm := k.classifyActiveSignals(result)
+		highestForRhythm := TierLow
+		for _, t := range activeSignalsForRhythm {
+			if tierRank(t) > tierRank(highestForRhythm) {
+				highestForRhythm = t
+			}
+		}
+		if tierRank(highestForRhythm) < tierRank(TierElevated) {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_rhythm"
+			k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_rhythm", highestForRhythm, len(activeSignalsForRhythm))
 			return
 		}
 	}
@@ -1002,9 +1174,9 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		if highestTier == TierLow {
 			cooldown = params.SignalCooldownLow
 		} else if highestTier == TierElevated {
-			cooldown = 15 * time.Minute
+			cooldown = params.SignalCooldownElevated
 		}
-		cooldown = time.Duration(float64(cooldown) * multiplier)
+		cooldown = time.Duration(float64(cooldown) * multiplier * timePeriodCooldownMultiplier(period))
 
 		if time.Since(lastAct.ActedAt) < cooldown {
 			result.ShouldAct = false
@@ -1014,11 +1186,25 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 12. Novelty check
+	// 12. Novelty check — with time-based escape hatch
 	if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
+		staleDuration := time.Since(lastAct.ActedAt)
+		staleEscapeThreshold := params.SignalCooldownNormal * 2
+		if staleDuration < staleEscapeThreshold {
+			// Same signals, not enough time has passed — suppress
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_stale"
+			k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_stale", highestTier, totalSignals)
+			return
+		}
+		// Stale escape: same signals, but enough time has passed.
+		// Fall through to nudge path with rotated content instead of blocking forever.
+		if !inConversation {
+			k.evaluateNudge(ctx, entityID, agentID, autonomy, params, result)
+			return
+		}
 		result.ShouldAct = false
 		result.DecisionReason = "suppress_stale"
-		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_stale", highestTier, totalSignals)
 		return
 	}
 
@@ -1049,17 +1235,9 @@ func (k *Keyoku) finalizeAct(ctx context.Context, entityID, agentID string, cfg 
 		result.TopicEntities = k.extractTopicEntities(ctx, result)
 	}
 
-	// Build state snapshot and detect deltas
+	// Build state snapshot (deltas already detected before evaluateShouldAct)
 	snapshot := buildStateSnapshot(result)
 	snapshotJSON, _ := json.Marshal(snapshot)
-
-	lastAct, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
-	if err == nil && lastAct != nil && lastAct.StateSnapshot != "" {
-		var prevSnapshot StateSnapshot
-		if json.Unmarshal([]byte(lastAct.StateSnapshot), &prevSnapshot) == nil {
-			result.PositiveDeltas = detectDeltas(snapshot, prevSnapshot)
-		}
-	}
 
 	// Graph enrichment
 	result.GraphContext = k.enrichSignalsWithGraph(ctx, entityID, result)
@@ -1071,6 +1249,30 @@ func (k *Keyoku) finalizeAct(ctx context.Context, entityID, agentID string, cfg 
 
 	// Record decision with full metadata
 	k.recordDecisionFull(ctx, entityID, agentID, "signal", fingerprint, "act", tier, totalSignals, result.TopicEntities, string(snapshotJSON))
+
+	// Record surfaced memory IDs for content rotation
+	if memIDs := collectSignalMemoryIDs(result); len(memIDs) > 0 {
+		_ = k.store.RecordSurfacedMemories(ctx, entityID, agentID, memIDs)
+	}
+
+	// Escalation tracking: bump topic surfacing count
+	if fingerprint != "" {
+		topicLabel := k.buildTopicLabel(result)
+		_ = k.store.UpsertTopicSurfacing(ctx, &storage.TopicSurfacing{
+			EntityID:   entityID,
+			AgentID:    agentID,
+			TopicHash:  fingerprint,
+			TopicLabel: topicLabel,
+		})
+		// Read back escalation level
+		if ts, err := k.store.GetTopicSurfacing(ctx, entityID, agentID, fingerprint); err == nil && ts != nil {
+			result.EscalationLevel = ts.TimesSurfaced
+			// Auto-drop after 4 surfacings with no response
+			if ts.TimesSurfaced >= 4 && !ts.UserResponded {
+				_ = k.store.MarkTopicDropped(ctx, entityID, agentID, fingerprint)
+			}
+		}
+	}
 
 	// LLM prioritization
 	k.runLLMPrioritization(ctx, cfg, result)
@@ -1147,10 +1349,12 @@ func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy 
 		}
 	}
 
-	// Check quiet hours for nudges too
-	if k.isQuietHour() {
+	// Time-of-day check for nudges — nudges are low-tier, suppress in evening+
+	nudgePeriod := k.currentTimePeriod()
+	result.TimePeriod = nudgePeriod
+	if tierRank(timePeriodMinTier(nudgePeriod)) > tierRank(TierLow) {
 		result.ShouldAct = false
-		result.DecisionReason = "suppress_quiet"
+		result.DecisionReason = "suppress_time_period"
 		return
 	}
 
@@ -1230,6 +1434,9 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 		}
 	}
 
+	// Content rotation cooldown: don't re-surface memories shown in the last 4 hours
+	surfaceCooldown := 4 * time.Hour
+
 	// 1. Continuity-first: plans and activities
 	continuityTypes := []storage.MemoryType{storage.TypePlan, storage.TypeActivity}
 	plans, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
@@ -1242,6 +1449,7 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 		Descending: true,
 	})
 	if err == nil {
+		plans = k.filterSurfacedMemories(ctx, entityID, agentID, plans, surfaceCooldown)
 		for _, m := range plans {
 			if m.AccessCount < 3 && m.Importance >= 0.5 {
 				return m.Content
@@ -1262,6 +1470,8 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 		return ""
 	}
 
+	memories = k.filterSurfacedMemories(ctx, entityID, agentID, memories, surfaceCooldown)
+
 	for _, m := range memories {
 		if m.AccessCount < 3 && m.Importance >= 0.6 {
 			return m.Content
@@ -1270,6 +1480,86 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 
 	// 3. Fall back to most important
 	return memories[0].Content
+}
+
+// filterSurfacedMemories removes recently-surfaced memories from a list.
+// Falls back to the original list if everything would be filtered out.
+func (k *Keyoku) filterSurfacedMemories(ctx context.Context, entityID, agentID string, memories []*Memory, cooldown time.Duration) []*Memory {
+	if len(memories) == 0 {
+		return memories
+	}
+	surfacedIDs, err := k.store.GetRecentlySurfacedMemoryIDs(ctx, entityID, agentID, cooldown)
+	if err != nil || len(surfacedIDs) == 0 {
+		return memories
+	}
+	surfacedSet := make(map[string]bool, len(surfacedIDs))
+	for _, id := range surfacedIDs {
+		surfacedSet[id] = true
+	}
+	var filtered []*Memory
+	for _, m := range memories {
+		if !surfacedSet[m.ID] {
+			filtered = append(filtered, m)
+		}
+	}
+	if len(filtered) == 0 {
+		return memories // fallback: don't go silent
+	}
+	return filtered
+}
+
+// buildTopicLabel creates a short human-readable label from signal content.
+func (k *Keyoku) buildTopicLabel(result *HeartbeatResult) string {
+	// Pick the most relevant memory content as a label
+	var content string
+	if len(result.PendingWork) > 0 {
+		content = result.PendingWork[0].Content
+	} else if len(result.Deadlines) > 0 {
+		content = result.Deadlines[0].Content
+	} else if len(result.GoalProgress) > 0 && result.GoalProgress[0].Plan != nil {
+		content = result.GoalProgress[0].Plan.Content
+	} else if result.NudgeContext != "" {
+		content = result.NudgeContext
+	}
+	if len(content) > 80 {
+		content = content[:80]
+	}
+	return content
+}
+
+// collectSignalMemoryIDs gathers all memory IDs from a heartbeat result's signals.
+func collectSignalMemoryIDs(result *HeartbeatResult) []string {
+	seen := make(map[string]bool)
+	add := func(id string) {
+		if id != "" {
+			seen[id] = true
+		}
+	}
+	for _, m := range result.PendingWork {
+		add(m.ID)
+	}
+	for _, m := range result.Deadlines {
+		add(m.ID)
+	}
+	for _, m := range result.Scheduled {
+		add(m.ID)
+	}
+	for _, m := range result.StaleMonitors {
+		add(m.ID)
+	}
+	for _, m := range result.Decaying {
+		add(m.ID)
+	}
+	for _, g := range result.GoalProgress {
+		if g.Plan != nil {
+			add(g.Plan.ID)
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // classifyActiveSignals returns a map of check type → tier for signals that are present.
@@ -1311,6 +1601,9 @@ func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatChe
 	}
 	if len(result.Patterns) > 0 {
 		active[CheckPatterns] = signalTierMap[CheckPatterns]
+	}
+	if len(result.PositiveDeltas) > 0 {
+		active[CheckPositiveDeltas] = signalTierMap[CheckPositiveDeltas]
 	}
 
 	return active
