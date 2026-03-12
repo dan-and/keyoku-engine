@@ -263,12 +263,6 @@ func tierRank(tier string) int {
 	}
 }
 
-// isQuietHour checks if the current time falls within the quiet period.
-// Kept for backward compatibility — now delegates to currentTimePeriod.
-func (k *Keyoku) isQuietHour() bool {
-	return k.currentTimePeriod() == PeriodQuiet
-}
-
 // isUserTypicallyActive checks if the user has historically been active at the current hour.
 // Returns true if current hour accounts for >= 2% of total message volume over the last 14 days,
 // or if there's insufficient data to determine a pattern.

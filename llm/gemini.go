@@ -17,8 +17,7 @@ import (
 type GeminiProvider struct {
 	client    *genai.Client
 	model     string
-	liteMode  bool // lite models use simplified schemas for complex methods
-	ultraLite bool // ultra-lite models (e.g. 3.1-flash-lite) need maximally simplified schemas
+	liteMode bool // lite models use simplified schemas for complex methods
 }
 
 func NewGeminiProvider(apiKey, model string) (*GeminiProvider, error) {
