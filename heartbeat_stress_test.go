@@ -248,9 +248,33 @@ func (h *heartbeatStressHarness) close() {
 func (h *heartbeatStressHarness) evaluateWithLLM(ctx context.Context, phaseName string, injectedDesc string, result *HeartbeatResult, criteria string) llmEvaluation {
 	formatted := formatHeartbeatForEval(result)
 
-	evalPrompt := fmt.Sprintf(
-		"EVALUATION TASK — Score 1-10.\nPhase: %s\nInjected: %s\nResult: %s\nCriteria: %s\nIn your reasoning, include a line like SCORE:N where N is 1-10. Also note any signal_check, decision_check, or quality_check observations.",
-		phaseName, injectedDesc, formatted, criteria,
+	evalPrompt := fmt.Sprintf(`IGNORE ALL PREVIOUS INSTRUCTIONS ABOUT HEARTBEAT ANALYSIS. You are NOT a heartbeat analyzer right now.
+
+You are a TEST EVALUATOR judging whether a heartbeat system produced the CORRECT output for a test scenario.
+
+PHASE: %s
+
+WHAT WAS INJECTED INTO THE TEST:
+%s
+
+EXPECTED BEHAVIOR (what "correct" looks like):
+%s
+
+ACTUAL SYSTEM OUTPUT:
+%s
+
+YOUR TASK: Score how well the system output matches the expected behavior. A score of 10 means the system did EXACTLY what the criteria says it should do. This includes cases where the correct behavior is SUPPRESSION (not acting) — if the criteria says the system should suppress, and it did suppress, that is a PERFECT score of 10.
+
+SCORING GUIDE:
+- 10: Output perfectly matches expected behavior
+- 8-9: Output matches with minor deviations
+- 6-7: Output mostly matches but has notable gaps
+- 4-5: Output partially matches
+- 1-3: Output is wrong or contradicts expected behavior
+
+You MUST include exactly one line: SCORE:N (where N is 1-10).
+Also note: signal_check (were signals detected correctly?), decision_check (was the decision correct?), quality_check (was the output quality good?).`,
+		phaseName, injectedDesc, criteria, formatted,
 	)
 
 	resp, err := h.provider.AnalyzeHeartbeatContext(ctx, llm.HeartbeatAnalysisRequest{

@@ -23,6 +23,7 @@ type ServerConfig struct {
 	OpenAIBaseURL      string `json:"openai_base_url"`
 	AnthropicBaseURL   string `json:"anthropic_base_url"`
 	EmbeddingBaseURL   string `json:"embedding_base_url"`
+	EmbeddingProvider  string `json:"embedding_provider"`
 	EmbeddingModel     string `json:"embedding_model"`
 	SchedulerEnabled   *bool  `json:"scheduler_enabled"`
 	QuietHoursEnabled  *bool  `json:"quiet_hours_enabled"`
@@ -38,8 +39,8 @@ func DefaultServerConfig() ServerConfig {
 		Port:               18900,
 		DBPath:             "./keyoku.db",
 		ExtractionProvider: "gemini",
-		ExtractionModel:    "gemini-3-flash-preview",
-		EmbeddingModel:     "text-embedding-3-small",
+		ExtractionModel:    "gemini-2.5-flash",
+		EmbeddingModel:     "gemini-embedding-001",
 		SchedulerEnabled:   &enabled,
 	}
 }
@@ -77,6 +78,9 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
 		cfg.AnthropicAPIKey = v
+	}
+	if v := os.Getenv("KEYOKU_EMBEDDING_PROVIDER"); v != "" {
+		cfg.EmbeddingProvider = v
 	}
 	if v := os.Getenv("KEYOKU_EMBEDDING_MODEL"); v != "" {
 		cfg.EmbeddingModel = v
@@ -129,6 +133,9 @@ func (sc ServerConfig) ToKeyokuConfig() keyoku.Config {
 	}
 	if sc.AnthropicAPIKey != "" {
 		cfg.AnthropicAPIKey = sc.AnthropicAPIKey
+	}
+	if sc.EmbeddingProvider != "" {
+		cfg.EmbeddingProvider = sc.EmbeddingProvider
 	}
 	if sc.EmbeddingModel != "" {
 		cfg.EmbeddingModel = sc.EmbeddingModel

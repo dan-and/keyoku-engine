@@ -130,8 +130,18 @@ func New(cfg Config) (*Keyoku, error) {
 	}
 
 	// Create embedder (supports OpenAI or Gemini)
+	// If EmbeddingProvider is not set, match the extraction provider.
+	embProvider := cfg.EmbeddingProvider
+	if embProvider == "" {
+		switch cfg.ExtractionProvider {
+		case "gemini", "google":
+			embProvider = "gemini"
+		default:
+			embProvider = "openai"
+		}
+	}
 	var emb embedder.Embedder
-	switch cfg.EmbeddingProvider {
+	switch embProvider {
 	case "gemini", "google":
 		var embErr error
 		emb, embErr = embedder.NewGemini(cfg.GeminiAPIKey, cfg.EmbeddingModel)
