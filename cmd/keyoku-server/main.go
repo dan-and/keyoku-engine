@@ -243,10 +243,8 @@ func corsMiddleware(allowedOrigins map[string]bool, next http.Handler) http.Hand
 		if origin != "" && allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-		} else if origin == "" {
-			// Same-origin request (no Origin header) — allow
 		}
-		// If origin is set but not in allowlist, don't set CORS headers (browser will block)
+		// If origin is empty (same-origin) or not in allowlist, no CORS headers are set
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")

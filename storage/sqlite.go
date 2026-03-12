@@ -66,6 +66,14 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// ExecRaw executes a raw SQL statement. Intended for testing with precise control over timestamps.
+func (s *SQLiteStore) ExecRaw(ctx context.Context, query string, args ...any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 func (s *SQLiteStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
