@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // OpenAIEmbedder implements Embedder using the OpenAI embeddings API.
@@ -41,7 +42,7 @@ func NewOpenAIWithBaseURL(apiKey, model, baseURL string) *OpenAIEmbedder {
 		model:   model,
 		dims:    dims,
 		baseURL: baseURL,
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

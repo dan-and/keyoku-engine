@@ -1420,12 +1420,12 @@ func runAgentStressForProvider(t *testing.T, spec providerSpec) *agentStressRepo
 // Models tested:
 //   - OpenAI:    gpt-5-mini  ($0.10/$0.40 per 1M tokens)
 //   - Anthropic: claude-haiku-4-5-20251001  ($1.00/$5.00 per 1M tokens)
-//   - Gemini:    gemini-3.1-flash-lite-preview  (~$0.10/$0.40 per 1M tokens)
+//   - Gemini:    gemini-2.5-flash  (~$0.10/$0.40 per 1M tokens)
 func TestStress_AgentCompareProviders(t *testing.T) {
 	providers := []providerSpec{
 		{name: "OpenAI gpt-5-mini", provider: "openai", model: "gpt-5-mini", envKey: "OPENAI_API_KEY"},
 		{name: "Anthropic claude-haiku-4-5", provider: "anthropic", model: "claude-haiku-4-5-20251001", envKey: "ANTHROPIC_API_KEY"},
-		{name: "Gemini 3.1-flash-lite", provider: "gemini", model: "gemini-3.1-flash-lite-preview", envKey: "GEMINI_API_KEY"},
+		{name: "Gemini 3.1-flash-lite", provider: "gemini", model: "gemini-2.5-flash", envKey: "GEMINI_API_KEY"},
 	}
 
 	type providerResult struct {
@@ -1705,13 +1705,13 @@ func TestStress_AgentCompareStacks(t *testing.T) {
 			embEnvKey: "OPENAI_API_KEY", enableRerank: true,
 		},
 		{
-			name: "Gemini+Gemini/rerank-off", llmProvider: "gemini", llmModel: "gemini-3.1-flash-lite-preview",
-			llmEnvKey: "GEMINI_API_KEY", embProvider: "gemini", embModel: "text-embedding-004",
+			name: "Gemini+Gemini/rerank-off", llmProvider: "gemini", llmModel: "gemini-2.5-flash",
+			llmEnvKey: "GEMINI_API_KEY", embProvider: "gemini", embModel: "gemini-embedding-001",
 			embEnvKey: "GEMINI_API_KEY", enableRerank: false,
 		},
 		{
-			name: "Gemini+Gemini/rerank-on", llmProvider: "gemini", llmModel: "gemini-3.1-flash-lite-preview",
-			llmEnvKey: "GEMINI_API_KEY", embProvider: "gemini", embModel: "text-embedding-004",
+			name: "Gemini+Gemini/rerank-on", llmProvider: "gemini", llmModel: "gemini-2.5-flash",
+			llmEnvKey: "GEMINI_API_KEY", embProvider: "gemini", embModel: "gemini-embedding-001",
 			embEnvKey: "GEMINI_API_KEY", enableRerank: true,
 		},
 	}

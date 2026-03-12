@@ -27,7 +27,7 @@ type Config struct {
 
 	// Embeddings
 	EmbeddingProvider string // "openai" (default), "gemini"
-	EmbeddingModel    string // default: "text-embedding-3-small" (openai) or "text-embedding-004" (gemini)
+	EmbeddingModel    string // default: "text-embedding-3-small" (openai) or "gemini-embedding-001" (gemini)
 
 	// Behavior
 	MaxExtractTokens int // default: 4000

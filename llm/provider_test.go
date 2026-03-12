@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loadEnv reads a .env file and sets environment variables.
@@ -204,15 +205,22 @@ func TestFormatStateExtractionPrompt_Defaults(t *testing.T) {
 
 // --- Integration tests (require API keys, make real API calls) ---
 
+// geminiCtx returns a context with a 60-second timeout for Gemini API calls.
+func geminiCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 60*time.Second)
+}
+
 func TestGemini_ExtractMemories(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
+	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
 
-	resp, err := p.ExtractMemories(context.Background(), ExtractionRequest{
+	ctx, cancel := geminiCtx()
+	defer cancel()
+	resp, err := p.ExtractMemories(ctx, ExtractionRequest{
 		Content: "My name is Alice and I work at Google. I love hiking on weekends.",
 	})
 	if err != nil {
@@ -242,12 +250,14 @@ func TestGemini_ExtractMemories(t *testing.T) {
 func TestGemini_ConsolidateMemories(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
+	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
 
-	resp, err := p.ConsolidateMemories(context.Background(), ConsolidationRequest{
+	ctx, cancel := geminiCtx()
+	defer cancel()
+	resp, err := p.ConsolidateMemories(ctx, ConsolidationRequest{
 		Memories: []string{
 			"User likes pizza",
 			"User enjoys Italian food, especially pasta",
@@ -265,12 +275,14 @@ func TestGemini_ConsolidateMemories(t *testing.T) {
 func TestGemini_ExtractWithSchema(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
+	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
 
-	resp, err := p.ExtractWithSchema(context.Background(), CustomExtractionRequest{
+	ctx, cancel := geminiCtx()
+	defer cancel()
+	resp, err := p.ExtractWithSchema(ctx, CustomExtractionRequest{
 		Content:    "Meeting with John Smith tomorrow at 3pm in Conference Room B",
 		SchemaName: "meeting",
 		Schema: map[string]any{
@@ -296,12 +308,14 @@ func TestGemini_ExtractWithSchema(t *testing.T) {
 func TestGemini_ExtractState(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-3-flash-preview")
+	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
 
-	resp, err := p.ExtractState(context.Background(), StateExtractionRequest{
+	ctx, cancel := geminiCtx()
+	defer cancel()
+	resp, err := p.ExtractState(ctx, StateExtractionRequest{
 		Content:    "The order has been shipped and tracking number is ABC123",
 		SchemaName: "order_state",
 		Schema: map[string]any{

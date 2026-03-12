@@ -20,9 +20,12 @@ type GeminiEmbedder struct {
 // NewGemini creates a Gemini embedder using the google.golang.org/genai SDK.
 func NewGemini(apiKey, model string) (*GeminiEmbedder, error) {
 	if model == "" {
-		model = "text-embedding-004"
+		model = "gemini-embedding-001"
 	}
-	dims := 768 // text-embedding-004 default
+	dims := 3072 // gemini-embedding-001 default
+	if model == "text-embedding-004" {
+		dims = 768
+	}
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,
@@ -46,6 +49,9 @@ func (g *GeminiEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 }
 
 func (g *GeminiEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
 	contents := make([]*genai.Content, len(texts))
 	for i, t := range texts {
 		contents[i] = genai.NewContentFromText(t, "")
