@@ -963,6 +963,23 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		result.Patterns = k.detectBehavioralPatterns(ctx, entityID)
 	}
 
+	// 13. SURFACED MEMORY FILTER — remove signals that were already surfaced recently.
+	// This prevents the AI from covering the same topics with different wording.
+	// Scheduled signals are exempt (cron tasks that are due must fire regardless).
+	// Deadlines use soft filter (always keep at least one reminder).
+	// PendingWork/StaleMonitors/Decaying use strict filter (go quiet if already covered).
+	{
+		agentIDForFilter := cfg.agentID
+		if agentIDForFilter == "" {
+			agentIDForFilter = "default"
+		}
+		surfaceCooldown := 2 * time.Hour // same topic won't resurface for 2h
+		result.PendingWork = k.filterSurfacedMemoriesStrict(ctx, entityID, agentIDForFilter, result.PendingWork, surfaceCooldown)
+		result.Deadlines = k.filterSurfacedMemories(ctx, entityID, agentIDForFilter, result.Deadlines, surfaceCooldown)
+		result.StaleMonitors = k.filterSurfacedMemoriesStrict(ctx, entityID, agentIDForFilter, result.StaleMonitors, surfaceCooldown)
+		result.Decaying = k.filterSurfacedMemoriesStrict(ctx, entityID, agentIDForFilter, result.Decaying, surfaceCooldown)
+	}
+
 	// Build ByAgent attribution for team heartbeat mode
 	if cfg.teamHeartbeat {
 		result.ByAgent = buildByAgentAttribution(result)
@@ -1502,6 +1519,29 @@ func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string)
 
 	// 3. Fall back to most important
 	return memories[0].Content
+}
+
+// filterSurfacedMemoriesStrict removes recently-surfaced memories from a list.
+// Returns nil if everything is filtered out (caller should treat as "no signals").
+func (k *Keyoku) filterSurfacedMemoriesStrict(ctx context.Context, entityID, agentID string, memories []*Memory, cooldown time.Duration) []*Memory {
+	if len(memories) == 0 {
+		return memories
+	}
+	surfacedIDs, err := k.store.GetRecentlySurfacedMemoryIDs(ctx, entityID, agentID, cooldown)
+	if err != nil || len(surfacedIDs) == 0 {
+		return memories
+	}
+	surfacedSet := make(map[string]bool, len(surfacedIDs))
+	for _, id := range surfacedIDs {
+		surfacedSet[id] = true
+	}
+	var filtered []*Memory
+	for _, m := range memories {
+		if !surfacedSet[m.ID] {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered // may be nil — that's intentional
 }
 
 // filterSurfacedMemories removes recently-surfaced memories from a list.
