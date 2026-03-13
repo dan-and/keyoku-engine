@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 package llm
 
@@ -40,96 +40,8 @@ func (o *OpenAIProvider) tempFixed() bool {
 	return strings.HasPrefix(o.model, "gpt-5-mini") || strings.HasPrefix(o.model, "o1") || strings.HasPrefix(o.model, "o3")
 }
 
-var extractionSchema = map[string]interface{}{
-	"type": "object",
-	"properties": map[string]interface{}{
-		"memories": map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"content":            map[string]interface{}{"type": "string"},
-					"type":               map[string]interface{}{"type": "string", "enum": []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
-					"importance":         map[string]interface{}{"type": "number"},
-					"confidence":         map[string]interface{}{"type": "number"},
-					"sentiment":          map[string]interface{}{"type": "number"},
-					"importance_factors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-					"confidence_factors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-					"hedging_detected":   map[string]interface{}{"type": "boolean"},
-				},
-				"required":             []string{"content", "type", "importance", "confidence", "sentiment", "importance_factors", "confidence_factors", "hedging_detected"},
-				"additionalProperties": false,
-			},
-		},
-		"entities": map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"canonical_name": map[string]interface{}{"type": "string"},
-					"type":           map[string]interface{}{"type": "string", "enum": []string{"PERSON", "ORGANIZATION", "LOCATION", "PRODUCT"}},
-					"aliases":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-					"context":        map[string]interface{}{"type": "string"},
-				},
-				"required":             []string{"canonical_name", "type", "aliases", "context"},
-				"additionalProperties": false,
-			},
-		},
-		"relationships": map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"source":     map[string]interface{}{"type": "string"},
-					"relation":   map[string]interface{}{"type": "string"},
-					"target":     map[string]interface{}{"type": "string"},
-					"confidence": map[string]interface{}{"type": "number"},
-				},
-				"required":             []string{"source", "relation", "target", "confidence"},
-				"additionalProperties": false,
-			},
-		},
-		"updates": map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":       map[string]interface{}{"type": "string"},
-					"new_content": map[string]interface{}{"type": "string"},
-					"reason":      map[string]interface{}{"type": "string"},
-				},
-				"required":             []string{"query", "new_content", "reason"},
-				"additionalProperties": false,
-			},
-		},
-		"deletes": map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":  map[string]interface{}{"type": "string"},
-					"reason": map[string]interface{}{"type": "string"},
-				},
-				"required":             []string{"query", "reason"},
-				"additionalProperties": false,
-			},
-		},
-		"skipped": map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"text":   map[string]interface{}{"type": "string"},
-					"reason": map[string]interface{}{"type": "string"},
-				},
-				"required":             []string{"text", "reason"},
-				"additionalProperties": false,
-			},
-		},
-	},
-	"required":             []string{"memories", "entities", "relationships", "updates", "deletes", "skipped"},
-	"additionalProperties": false,
-}
+// openaiExtractionSchema is computed once from the shared canonical schema.
+var openaiExtractionSchema = ForOpenAIExtraction()
 
 func (o *OpenAIProvider) ExtractMemories(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error) {
 	prompt := FormatPrompt(req)
@@ -144,7 +56,7 @@ func (o *OpenAIProvider) ExtractMemories(ctx context.Context, req ExtractionRequ
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
 					Name:   "extraction_response",
-					Schema: extractionSchema,
+					Schema: openaiExtractionSchema,
 					Strict: openai.Bool(true),
 				},
 			},
@@ -210,16 +122,7 @@ func (o *OpenAIProvider) ConsolidateMemories(ctx context.Context, req Consolidat
 func (o *OpenAIProvider) ExtractWithSchema(ctx context.Context, req CustomExtractionRequest) (*CustomExtractionResponse, error) {
 	prompt := FormatCustomExtractionPrompt(req)
 
-	responseSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"extracted_data": req.Schema,
-			"confidence":     map[string]interface{}{"type": "number"},
-			"reasoning":      map[string]interface{}{"type": "string"},
-		},
-		"required":             []string{"extracted_data", "confidence", "reasoning"},
-		"additionalProperties": false,
-	}
+	responseSchema := ForOpenAI(CustomExtractionResponseSchema(req.Schema))
 
 	params := openai.ChatCompletionNewParams{
 		Model: o.model,
@@ -260,19 +163,7 @@ func (o *OpenAIProvider) ExtractWithSchema(ctx context.Context, req CustomExtrac
 func (o *OpenAIProvider) ExtractState(ctx context.Context, req StateExtractionRequest) (*StateExtractionResponse, error) {
 	prompt := FormatStateExtractionPrompt(req)
 
-	responseSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"extracted_state":  map[string]interface{}{"type": "object"},
-			"changed_fields":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-			"confidence":       map[string]interface{}{"type": "number"},
-			"reasoning":        map[string]interface{}{"type": "string"},
-			"suggested_action": map[string]interface{}{"type": "string"},
-			"validation_error": map[string]interface{}{"type": "string"},
-		},
-		"required":             []string{"extracted_state", "changed_fields", "confidence", "reasoning"},
-		"additionalProperties": false,
-	}
+	stateSchema := ForOpenAI(StateExtractionResponseSchema())
 
 	params := openai.ChatCompletionNewParams{
 		Model: o.model,
@@ -284,7 +175,7 @@ func (o *OpenAIProvider) ExtractState(ctx context.Context, req StateExtractionRe
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
 					Name:   "state_extraction_response",
-					Schema: responseSchema,
+					Schema: stateSchema,
 					Strict: openai.Bool(true),
 				},
 			},
@@ -313,19 +204,6 @@ func (o *OpenAIProvider) ExtractState(ctx context.Context, req StateExtractionRe
 func (o *OpenAIProvider) DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error) {
 	prompt := FormatConflictCheckPrompt(req)
 
-	conflictSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"contradicts":   map[string]interface{}{"type": "boolean"},
-			"conflict_type": map[string]interface{}{"type": "string", "enum": []string{"contradiction", "update", "temporal", "partial", "none"}},
-			"confidence":    map[string]interface{}{"type": "number"},
-			"explanation":   map[string]interface{}{"type": "string"},
-			"resolution":    map[string]interface{}{"type": "string", "enum": []string{"use_new", "keep_existing", "merge", "keep_both"}},
-		},
-		"required":             []string{"contradicts", "conflict_type", "confidence", "explanation", "resolution"},
-		"additionalProperties": false,
-	}
-
 	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
@@ -336,7 +214,7 @@ func (o *OpenAIProvider) DetectConflict(ctx context.Context, req ConflictCheckRe
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
 					Name:   "conflict_check_response",
-					Schema: conflictSchema,
+					Schema: ForOpenAI(ConflictCheckSchema()),
 					Strict: openai.Bool(true),
 				},
 			},
@@ -365,17 +243,6 @@ func (o *OpenAIProvider) DetectConflict(ctx context.Context, req ConflictCheckRe
 func (o *OpenAIProvider) ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error) {
 	prompt := FormatImportanceReEvalPrompt(req)
 
-	importanceSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"new_importance": map[string]interface{}{"type": "number"},
-			"reason":         map[string]interface{}{"type": "string"},
-			"should_update":  map[string]interface{}{"type": "boolean"},
-		},
-		"required":             []string{"new_importance", "reason", "should_update"},
-		"additionalProperties": false,
-	}
-
 	params := openai.ChatCompletionNewParams{
 		Model: o.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
@@ -386,7 +253,7 @@ func (o *OpenAIProvider) ReEvaluateImportance(ctx context.Context, req Importanc
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
 					Name:   "importance_reeval_response",
-					Schema: importanceSchema,
+					Schema: ForOpenAI(ImportanceReEvalSchema()),
 					Strict: openai.Bool(true),
 				},
 			},
@@ -413,22 +280,6 @@ func (o *OpenAIProvider) ReEvaluateImportance(ctx context.Context, req Importanc
 }
 
 func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error) {
-	prioritySchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
-		Name:   "action_priority",
-		Strict: openai.Bool(true),
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"priority_action": map[string]interface{}{"type": "string"},
-				"action_items":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-				"reasoning":       map[string]interface{}{"type": "string"},
-				"urgency":         map[string]interface{}{"type": "string", "enum": []string{"immediate", "soon", "can_wait"}},
-			},
-			"required":             []string{"priority_action", "action_items", "reasoning", "urgency"},
-			"additionalProperties": false,
-		},
-	}
-
 	prompt := FormatActionPriorityPrompt(req)
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
@@ -437,7 +288,11 @@ func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 			openai.UserMessage(prompt),
 		},
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: prioritySchema},
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "action_priority",
+				Strict: openai.Bool(true),
+				Schema: ForOpenAI(ActionPrioritySchema()),
+			}},
 		},
 	}
 	if !o.tempFixed() {
@@ -461,25 +316,6 @@ func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 }
 
 func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
-	analysisSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
-		Name:   "heartbeat_analysis",
-		Strict: openai.Bool(true),
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"should_act":          map[string]interface{}{"type": "boolean"},
-				"action_brief":        map[string]interface{}{"type": "string"},
-				"recommended_actions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-				"urgency":             map[string]interface{}{"type": "string", "enum": []string{"none", "low", "medium", "high", "critical"}},
-				"reasoning":           map[string]interface{}{"type": "string"},
-				"autonomy":            map[string]interface{}{"type": "string", "enum": []string{"observe", "suggest", "act"}},
-				"user_facing":         map[string]interface{}{"type": "string"},
-			},
-			"required":             []string{"should_act", "action_brief", "recommended_actions", "urgency", "reasoning", "autonomy", "user_facing"},
-			"additionalProperties": false,
-		},
-	}
-
 	prompt := FormatHeartbeatAnalysisPrompt(req)
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
@@ -488,7 +324,11 @@ func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req Heartb
 			openai.UserMessage(prompt),
 		},
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: analysisSchema},
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "heartbeat_analysis",
+				Strict: openai.Bool(true),
+				Schema: ForOpenAI(HeartbeatAnalysisSchema()),
+			}},
 		},
 	}
 	if !o.tempFixed() {
@@ -512,20 +352,6 @@ func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req Heartb
 }
 
 func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
-	graphSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
-		Name:   "graph_summary",
-		Strict: openai.Bool(true),
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"summary":    map[string]interface{}{"type": "string"},
-				"confidence": map[string]interface{}{"type": "number"},
-			},
-			"required":             []string{"summary", "confidence"},
-			"additionalProperties": false,
-		},
-	}
-
 	prompt := FormatGraphSummaryPrompt(req)
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
@@ -534,7 +360,11 @@ func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 			openai.UserMessage(prompt),
 		},
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: graphSchema},
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "graph_summary",
+				Strict: openai.Bool(true),
+				Schema: ForOpenAI(GraphSummarySchema()),
+			}},
 		},
 	}
 	if !o.tempFixed() {
@@ -558,30 +388,6 @@ func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 }
 
 func (o *OpenAIProvider) RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
-	rerankSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
-		Name:   "rerank_response",
-		Strict: openai.Bool(true),
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"rankings": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"id":    map[string]interface{}{"type": "string"},
-							"score": map[string]interface{}{"type": "number"},
-						},
-						"required":             []string{"id", "score"},
-						"additionalProperties": false,
-					},
-				},
-			},
-			"required":             []string{"rankings"},
-			"additionalProperties": false,
-		},
-	}
-
 	prompt := FormatRerankPrompt(req)
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
@@ -590,7 +396,11 @@ func (o *OpenAIProvider) RerankMemories(ctx context.Context, req RerankRequest) 
 			openai.UserMessage(prompt),
 		},
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: rerankSchema},
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "rerank_response",
+				Strict: openai.Bool(true),
+				Schema: ForOpenAI(RerankSchema()),
+			}},
 		},
 	}
 	if !o.tempFixed() {

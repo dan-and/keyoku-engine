@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 package engine
 
@@ -209,8 +209,6 @@ func (d *DuplicateDetector) FindDuplicatesForConsolidation(ctx context.Context, 
 	if threshold <= 0 {
 		threshold = d.config.NearDuplicateThreshold
 	}
-	_ = threshold // TODO: use threshold in similarity comparison
-
 	query := storage.MemoryQuery{
 		EntityID: entityID,
 		States:   []storage.MemoryState{storage.StateActive, storage.StateStale},

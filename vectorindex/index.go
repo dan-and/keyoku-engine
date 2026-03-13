@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 package vectorindex
 

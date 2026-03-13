@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 package llm
 
@@ -164,90 +164,9 @@ func (g *GeminiProvider) ExtractMemories(ctx context.Context, req ExtractionRequ
 
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"memories": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"content":            {Type: genai.TypeString},
-							"type":               {Type: genai.TypeString, Enum: []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
-							"importance":         {Type: genai.TypeNumber},
-							"confidence":         {Type: genai.TypeNumber},
-							"sentiment":          {Type: genai.TypeNumber},
-							"importance_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-							"confidence_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-							"hedging_detected":   {Type: genai.TypeBoolean},
-						},
-						Required: []string{"content", "type", "importance", "confidence", "sentiment"},
-					},
-				},
-				"entities": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"canonical_name": {Type: genai.TypeString},
-							"type":           {Type: genai.TypeString, Enum: []string{"PERSON", "ORGANIZATION", "LOCATION", "PRODUCT"}},
-							"aliases":        {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-							"context":        {Type: genai.TypeString},
-						},
-						Required: []string{"canonical_name", "type"},
-					},
-				},
-				"relationships": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"source":     {Type: genai.TypeString},
-							"relation":   {Type: genai.TypeString},
-							"target":     {Type: genai.TypeString},
-							"confidence": {Type: genai.TypeNumber},
-						},
-						Required: []string{"source", "relation", "target", "confidence"},
-					},
-				},
-				"updates": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"query":       {Type: genai.TypeString},
-							"new_content": {Type: genai.TypeString},
-							"reason":      {Type: genai.TypeString},
-						},
-						Required: []string{"query", "new_content", "reason"},
-					},
-				},
-				"deletes": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"query":  {Type: genai.TypeString},
-							"reason": {Type: genai.TypeString},
-						},
-						Required: []string{"query", "reason"},
-					},
-				},
-				"skipped": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"text":   {Type: genai.TypeString},
-							"reason": {Type: genai.TypeString},
-						},
-						Required: []string{"text", "reason"},
-					},
-				},
-			},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGeminiExtraction(),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatPrompt(req), config)
@@ -287,17 +206,9 @@ func (g *GeminiProvider) ConsolidateMemories(ctx context.Context, req Consolidat
 func (g *GeminiProvider) ExtractWithSchema(ctx context.Context, req CustomExtractionRequest) (*CustomExtractionResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"extracted_data": {Type: genai.TypeObject},
-				"confidence":     {Type: genai.TypeNumber},
-				"reasoning":      {Type: genai.TypeString},
-			},
-			Required: []string{"extracted_data", "confidence", "reasoning"},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(CustomExtractionResponseSchema(req.Schema)),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatCustomExtractionPrompt(req), config)
@@ -315,20 +226,9 @@ func (g *GeminiProvider) ExtractWithSchema(ctx context.Context, req CustomExtrac
 func (g *GeminiProvider) ExtractState(ctx context.Context, req StateExtractionRequest) (*StateExtractionResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"extracted_state":  {Type: genai.TypeObject},
-				"changed_fields":   {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-				"confidence":       {Type: genai.TypeNumber},
-				"reasoning":        {Type: genai.TypeString},
-				"suggested_action": {Type: genai.TypeString},
-				"validation_error": {Type: genai.TypeString},
-			},
-			Required: []string{"extracted_state", "changed_fields", "confidence", "reasoning"},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(StateExtractionResponseSchema()),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatStateExtractionPrompt(req), config)
@@ -346,19 +246,9 @@ func (g *GeminiProvider) ExtractState(ctx context.Context, req StateExtractionRe
 func (g *GeminiProvider) DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"contradicts":   {Type: genai.TypeBoolean},
-				"conflict_type": {Type: genai.TypeString, Enum: []string{"contradiction", "update", "temporal", "partial", "none"}},
-				"confidence":    {Type: genai.TypeNumber},
-				"explanation":   {Type: genai.TypeString},
-				"resolution":    {Type: genai.TypeString, Enum: []string{"use_new", "keep_existing", "merge", "keep_both"}},
-			},
-			Required: []string{"contradicts", "conflict_type", "confidence", "explanation", "resolution"},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(ConflictCheckSchema()),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatConflictCheckPrompt(req), config)
@@ -376,17 +266,9 @@ func (g *GeminiProvider) DetectConflict(ctx context.Context, req ConflictCheckRe
 func (g *GeminiProvider) ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"new_importance": {Type: genai.TypeNumber},
-				"reason":         {Type: genai.TypeString},
-				"should_update":  {Type: genai.TypeBoolean},
-			},
-			Required: []string{"new_importance", "reason", "should_update"},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(ImportanceReEvalSchema()),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatImportanceReEvalPrompt(req), config)
@@ -404,18 +286,9 @@ func (g *GeminiProvider) ReEvaluateImportance(ctx context.Context, req Importanc
 func (g *GeminiProvider) PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"priority_action": {Type: genai.TypeString},
-				"action_items":    {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-				"reasoning":       {Type: genai.TypeString},
-				"urgency":         {Type: genai.TypeString, Enum: []string{"immediate", "soon", "can_wait"}},
-			},
-			Required: []string{"priority_action", "action_items", "reasoning", "urgency"},
-		},
-		Temperature: genai.Ptr[float32](0.3),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(ActionPrioritySchema()),
+		Temperature:      genai.Ptr[float32](0.3),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatActionPriorityPrompt(req), config)
@@ -433,21 +306,9 @@ func (g *GeminiProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 func (g *GeminiProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"should_act":          {Type: genai.TypeBoolean},
-				"action_brief":        {Type: genai.TypeString},
-				"recommended_actions": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-				"urgency":             {Type: genai.TypeString, Enum: []string{"none", "low", "medium", "high", "critical"}},
-				"reasoning":           {Type: genai.TypeString},
-				"autonomy":            {Type: genai.TypeString, Enum: []string{"observe", "suggest", "act"}},
-				"user_facing":         {Type: genai.TypeString},
-			},
-			Required: []string{"should_act", "action_brief", "recommended_actions", "urgency", "reasoning", "autonomy", "user_facing"},
-		},
-		Temperature: genai.Ptr[float32](0.3),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(HeartbeatAnalysisSchema()),
+		Temperature:      genai.Ptr[float32](0.3),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatHeartbeatAnalysisPrompt(req), config)
@@ -465,16 +326,9 @@ func (g *GeminiProvider) AnalyzeHeartbeatContext(ctx context.Context, req Heartb
 func (g *GeminiProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"summary":    {Type: genai.TypeString},
-				"confidence": {Type: genai.TypeNumber},
-			},
-			Required: []string{"summary", "confidence"},
-		},
-		Temperature: genai.Ptr[float32](0.3),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(GraphSummarySchema()),
+		Temperature:      genai.Ptr[float32](0.3),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatGraphSummaryPrompt(req), config)
@@ -492,25 +346,9 @@ func (g *GeminiProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 func (g *GeminiProvider) RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"rankings": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"id":    {Type: genai.TypeString},
-							"score": {Type: genai.TypeNumber},
-						},
-						Required: []string{"id", "score"},
-					},
-				},
-			},
-			Required: []string{"rankings"},
-		},
-		Temperature: genai.Ptr[float32](0.1),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGemini(RerankSchema()),
+		Temperature:      genai.Ptr[float32](0.1),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatRerankPrompt(req), config)
@@ -528,64 +366,9 @@ func (g *GeminiProvider) RerankMemories(ctx context.Context, req RerankRequest) 
 func (g *GeminiProvider) ExtractMemoriesCore(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"memories": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"content":            {Type: genai.TypeString},
-							"type":               {Type: genai.TypeString, Enum: []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
-							"importance":         {Type: genai.TypeNumber},
-							"confidence":         {Type: genai.TypeNumber},
-							"sentiment":          {Type: genai.TypeNumber},
-							"importance_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-							"confidence_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-							"hedging_detected":   {Type: genai.TypeBoolean},
-						},
-						Required: []string{"content", "type", "importance", "confidence", "sentiment"},
-					},
-				},
-				"updates": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"query":       {Type: genai.TypeString},
-							"new_content": {Type: genai.TypeString},
-							"reason":      {Type: genai.TypeString},
-						},
-						Required: []string{"query", "new_content", "reason"},
-					},
-				},
-				"deletes": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"query":  {Type: genai.TypeString},
-							"reason": {Type: genai.TypeString},
-						},
-						Required: []string{"query", "reason"},
-					},
-				},
-				"skipped": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"text":   {Type: genai.TypeString},
-							"reason": {Type: genai.TypeString},
-						},
-						Required: []string{"text", "reason"},
-					},
-				},
-			},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGeminiCoreExtraction(),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatPrompt(req), config)
@@ -606,39 +389,9 @@ func (g *GeminiProvider) ExtractMemoriesCore(ctx context.Context, req Extraction
 func (g *GeminiProvider) ExtractGraph(ctx context.Context, req ExtractionRequest) (*GraphExtractionResponse, error) {
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"entities": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"canonical_name": {Type: genai.TypeString},
-							"type":           {Type: genai.TypeString, Enum: []string{"PERSON", "ORGANIZATION", "LOCATION", "PRODUCT"}},
-							"aliases":        {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
-							"context":        {Type: genai.TypeString},
-						},
-						Required: []string{"canonical_name", "type"},
-					},
-				},
-				"relationships": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"source":     {Type: genai.TypeString},
-							"relation":   {Type: genai.TypeString},
-							"target":     {Type: genai.TypeString},
-							"confidence": {Type: genai.TypeNumber},
-						},
-						Required: []string{"source", "relation", "target", "confidence"},
-					},
-				},
-			},
-		},
-		Temperature: genai.Ptr[float32](0.2),
-		TopP:        genai.Ptr[float32](0.8),
+		ResponseSchema:   ForGeminiGraphExtraction(),
+		Temperature:      genai.Ptr[float32](0.2),
+		TopP:             genai.Ptr[float32](0.8),
 	}
 
 	text, err := g.generate(ctx, FormatPrompt(req), config)
