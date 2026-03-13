@@ -252,10 +252,11 @@ type watcherStartRequest struct {
 }
 
 type deliveryRequest struct {
-	Method    string `json:"method"`    // "cli" or ""
-	Command   string `json:"command"`   // e.g. "openclaw" or "docker exec kumo openclaw"
-	Channel   string `json:"channel"`   // e.g. "telegram"
-	Recipient string `json:"recipient"` // e.g. "-4970078838"
+	Method    string `json:"method"`     // "cli" or ""
+	Command   string `json:"command"`    // e.g. "openclaw" or "docker exec kumo openclaw"
+	Channel   string `json:"channel"`    // e.g. "telegram"
+	Recipient string `json:"recipient"`  // e.g. "-4970078838"
+	SessionID string `json:"session_id"` // e.g. "telegram:group:-4970078838"
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
 }
 

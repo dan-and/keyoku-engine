@@ -440,7 +440,7 @@ func TestCLIDeliverer_BuildArgs(t *testing.T) {
 	})
 
 	args := d.buildArgs("hello world")
-	expected := []string{"agent", "--message", "hello world", "--deliver", "--channel", "telegram", "--reply-to", "-4970078838"}
+	expected := []string{"agent", "--message", "hello world", "--deliver", "--session-id", "telegram:group:-4970078838", "--channel", "telegram", "--reply-to", "-4970078838"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}

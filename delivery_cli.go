@@ -82,6 +82,16 @@ func (d *CLIDeliverer) Deliver(ctx context.Context, entityID string, result *Hea
 func (d *CLIDeliverer) buildArgs(message string) []string {
 	args := []string{"agent", "--message", message, "--deliver"}
 
+	// Session ID is required for OpenClaw to route the message.
+	// Use explicit SessionID, or derive from Channel + Recipient.
+	sessionID := d.config.SessionID
+	if sessionID == "" && d.config.Channel != "" && d.config.Recipient != "" {
+		sessionID = d.config.Channel + ":group:" + d.config.Recipient
+	}
+	if sessionID != "" {
+		args = append(args, "--session-id", sessionID)
+	}
+
 	if d.config.Channel != "" {
 		args = append(args, "--channel", d.config.Channel)
 	}

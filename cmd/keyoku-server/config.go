@@ -32,10 +32,11 @@ type ServerConfig struct {
 	QuietHoursTimezone string `json:"quiet_hours_timezone"`
 
 	// Heartbeat delivery
-	DeliveryMethod    string `json:"delivery_method"`    // "cli" or ""
-	DeliveryCommand   string `json:"delivery_command"`   // e.g. "openclaw"
-	DeliveryChannel   string `json:"delivery_channel"`   // e.g. "telegram"
-	DeliveryRecipient string `json:"delivery_recipient"` // e.g. "-4970078838"
+	DeliveryMethod    string `json:"delivery_method"`     // "cli" or ""
+	DeliveryCommand   string `json:"delivery_command"`    // e.g. "openclaw"
+	DeliveryChannel   string `json:"delivery_channel"`    // e.g. "telegram"
+	DeliveryRecipient string `json:"delivery_recipient"`  // e.g. "-4970078838"
+	DeliverySessionID string `json:"delivery_session_id"` // e.g. "telegram:group:-4970078838"
 	AdaptiveHeartbeat *bool  `json:"adaptive_heartbeat"` // enable dynamic tick interval
 
 	// Auto-start watcher on boot
@@ -136,6 +137,9 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("KEYOKU_DELIVERY_RECIPIENT"); v != "" {
 		cfg.DeliveryRecipient = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_SESSION_ID"); v != "" {
+		cfg.DeliverySessionID = v
 	}
 	if v := os.Getenv("KEYOKU_ADAPTIVE_HEARTBEAT"); v != "" {
 		enabled := v == "true" || v == "1"

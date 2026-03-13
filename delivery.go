@@ -26,6 +26,10 @@ type DeliveryConfig struct {
 	// Recipient is the channel-specific target (e.g. Telegram chat ID "-4970078838").
 	Recipient string
 
+	// SessionID is the explicit session identifier (e.g. "telegram:group:-4970078838").
+	// If empty, it is derived from Channel + Recipient.
+	SessionID string
+
 	// Timeout for delivery attempts (default: 30s).
 	Timeout time.Duration
 }

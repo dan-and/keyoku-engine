@@ -109,6 +109,7 @@ func main() {
 				Command:   cfg.DeliveryCommand,
 				Channel:   cfg.DeliveryChannel,
 				Recipient: cfg.DeliveryRecipient,
+				SessionID: cfg.DeliverySessionID,
 			}
 		}
 
