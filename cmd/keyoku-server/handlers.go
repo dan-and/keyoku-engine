@@ -240,6 +240,23 @@ type heartbeatContextResponse struct {
 type watcherStartRequest struct {
 	IntervalMs int      `json:"interval_ms,omitempty"`
 	EntityIDs  []string `json:"entity_ids"`
+
+	// Adaptive heartbeat
+	Adaptive       bool `json:"adaptive,omitempty"`
+	BaseIntervalMs int  `json:"base_interval_ms,omitempty"`
+	MinIntervalMs  int  `json:"min_interval_ms,omitempty"`
+	MaxIntervalMs  int  `json:"max_interval_ms,omitempty"`
+
+	// Delivery config
+	Delivery *deliveryRequest `json:"delivery,omitempty"`
+}
+
+type deliveryRequest struct {
+	Method    string `json:"method"`    // "cli" or ""
+	Command   string `json:"command"`   // e.g. "openclaw" or "docker exec kumo openclaw"
+	Channel   string `json:"channel"`   // e.g. "telegram"
+	Recipient string `json:"recipient"` // e.g. "-4970078838"
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
 }
 
 type statsResponse struct {

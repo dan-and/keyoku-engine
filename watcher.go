@@ -13,7 +13,26 @@ import (
 // WatcherConfig configures the proactive heartbeat watcher.
 type WatcherConfig struct {
 	// Interval between heartbeat checks (default: 5m).
+	// Used in fixed mode (Adaptive=false).
 	Interval time.Duration
+
+	// Adaptive enables dynamic tick interval based on signal density,
+	// time of day, memory velocity, and recency of last action.
+	// When false (default), uses fixed Interval for backward compat.
+	Adaptive bool
+
+	// BaseInterval is the starting interval for adaptive mode (default: 5m).
+	BaseInterval time.Duration
+
+	// MinInterval is the floor for adaptive mode (default: 1m).
+	MinInterval time.Duration
+
+	// MaxInterval is the ceiling for adaptive mode (default: 30m).
+	MaxInterval time.Duration
+
+	// Delivery configures external delivery (e.g. via OpenClaw CLI).
+	// nil = event-only mode (backward compatible).
+	Delivery *DeliveryConfig
 
 	// EntityIDs to watch. If empty, the watcher does nothing until entities are added.
 	EntityIDs []string
@@ -44,6 +63,13 @@ type Watcher struct {
 	entityIDs map[string]bool
 	teamIDs   map[string]bool
 
+	// Delivery
+	deliverer Deliverer
+
+	// Adaptive interval state
+	lastResult  *HeartbeatResult
+	lastActTime time.Time
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -67,7 +93,7 @@ func newWatcher(k *Keyoku, config WatcherConfig) *Watcher {
 		config.Interval = 5 * time.Minute
 	}
 
-	return &Watcher{
+	w := &Watcher{
 		keyoku:    k,
 		config:    config,
 		logger:    k.logger.With("component", "watcher"),
@@ -76,13 +102,33 @@ func newWatcher(k *Keyoku, config WatcherConfig) *Watcher {
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+
+	// Wire up deliverer if configured
+	if config.Delivery != nil {
+		w.deliverer = NewDeliverer(*config.Delivery)
+		if cli, ok := w.deliverer.(*CLIDeliverer); ok {
+			cli.SetLogger(w.logger)
+		}
+	}
+
+	return w
 }
 
 // Start begins the background heartbeat loop.
 func (w *Watcher) Start() {
 	w.wg.Add(1)
 	go w.run()
-	w.logger.Info("watcher started", "interval", w.config.Interval)
+	if w.config.Adaptive {
+		w.logger.Info("watcher started",
+			"mode", "adaptive",
+			"base", w.config.BaseInterval,
+			"min", w.config.MinInterval,
+			"max", w.config.MaxInterval,
+			"delivery", w.config.Delivery != nil,
+		)
+	} else {
+		w.logger.Info("watcher started", "mode", "fixed", "interval", w.config.Interval)
+	}
 }
 
 // Stop gracefully stops the watcher.
@@ -134,17 +180,110 @@ func (w *Watcher) WatchedEntities() []string {
 func (w *Watcher) run() {
 	defer w.wg.Done()
 
-	ticker := time.NewTicker(w.config.Interval)
-	defer ticker.Stop()
+	if !w.config.Adaptive {
+		// Legacy fixed-interval mode (backward compat)
+		ticker := time.NewTicker(w.config.Interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-w.ctx.Done():
+				return
+			case <-ticker.C:
+				w.checkAll()
+			}
+		}
+	}
 
+	// Adaptive mode: compute interval dynamically after each tick
 	for {
+		interval := w.computeNextInterval()
+		w.logger.Debug("adaptive tick scheduled", "interval", interval)
+		timer := time.NewTimer(interval)
 		select {
 		case <-w.ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			w.checkAll()
 		}
 	}
+}
+
+// computeNextInterval calculates the dynamic interval based on signal state.
+func (w *Watcher) computeNextInterval() time.Duration {
+	base := w.config.BaseInterval
+	if base <= 0 {
+		base = 5 * time.Minute
+	}
+
+	interval := float64(base)
+
+	// Factor 1: Time since last action — check sooner after acting for follow-up
+	w.mu.RLock()
+	lastAct := w.lastActTime
+	lastResult := w.lastResult
+	w.mu.RUnlock()
+
+	if !lastAct.IsZero() {
+		sinceAct := time.Since(lastAct)
+		if sinceAct < 10*time.Minute {
+			interval *= 0.5
+		}
+	}
+
+	// Factor 2: Time of day
+	period := w.keyoku.currentTimePeriod()
+	interval *= timePeriodCooldownMultiplier(period)
+
+	// Factor 3: Signal density from last check
+	if lastResult != nil {
+		signalCount := countSignals(lastResult)
+		if signalCount > 5 {
+			interval *= 0.5 // high signal density = check more often
+		} else if signalCount == 0 {
+			interval *= 1.5 // quiet = check less
+		}
+	}
+
+	// Factor 4: Memory velocity
+	if lastResult != nil && lastResult.MemoryVelocityHigh {
+		interval *= 0.5
+	}
+
+	// Clamp to [min, max]
+	minInterval := w.config.MinInterval
+	if minInterval <= 0 {
+		minInterval = 1 * time.Minute
+	}
+	maxInterval := w.config.MaxInterval
+	if maxInterval <= 0 {
+		maxInterval = 30 * time.Minute
+	}
+
+	result := time.Duration(interval)
+	if result < minInterval {
+		result = minInterval
+	}
+	if result > maxInterval {
+		result = maxInterval
+	}
+
+	return result
+}
+
+// countSignals returns the total number of active signals in a result.
+func countSignals(r *HeartbeatResult) int {
+	n := len(r.PendingWork) + len(r.Deadlines) + len(r.Scheduled) +
+		len(r.Decaying) + len(r.Conflicts) + len(r.StaleMonitors) +
+		len(r.GoalProgress) + len(r.Relationships) + len(r.KnowledgeGaps) +
+		len(r.Patterns)
+	if r.Continuity != nil {
+		n++
+	}
+	if r.Sentiment != nil {
+		n++
+	}
+	return n
 }
 
 func (w *Watcher) checkAll() {
@@ -171,11 +310,26 @@ func (w *Watcher) checkAll() {
 			continue
 		}
 
+		// Cache last result for adaptive interval computation
+		w.mu.Lock()
+		w.lastResult = result
+		w.mu.Unlock()
+
 		if !result.ShouldAct {
 			continue
 		}
 
 		w.emitHeartbeatEvents(entityID, result)
+
+		// Deliver via external agent if configured
+		if w.deliverer != nil {
+			w.mu.Lock()
+			w.lastActTime = time.Now()
+			w.mu.Unlock()
+			if err := w.deliverer.Deliver(w.ctx, entityID, result); err != nil {
+				w.logger.Error("heartbeat delivery failed", "entity", entityID, "error", err)
+			}
+		}
 	}
 
 	// Team heartbeats — run for each team+entity combination

@@ -30,6 +30,13 @@ type ServerConfig struct {
 	QuietHourStart     *int   `json:"quiet_hour_start"`
 	QuietHourEnd       *int   `json:"quiet_hour_end"`
 	QuietHoursTimezone string `json:"quiet_hours_timezone"`
+
+	// Heartbeat delivery
+	DeliveryMethod    string `json:"delivery_method"`    // "cli" or ""
+	DeliveryCommand   string `json:"delivery_command"`   // e.g. "openclaw"
+	DeliveryChannel   string `json:"delivery_channel"`   // e.g. "telegram"
+	DeliveryRecipient string `json:"delivery_recipient"` // e.g. "-4970078838"
+	AdaptiveHeartbeat *bool  `json:"adaptive_heartbeat"` // enable dynamic tick interval
 }
 
 // DefaultServerConfig returns a server config with sensible defaults.
@@ -110,6 +117,22 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("KEYOKU_QUIET_HOURS_TIMEZONE"); v != "" {
 		cfg.QuietHoursTimezone = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_METHOD"); v != "" {
+		cfg.DeliveryMethod = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_COMMAND"); v != "" {
+		cfg.DeliveryCommand = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_CHANNEL"); v != "" {
+		cfg.DeliveryChannel = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_RECIPIENT"); v != "" {
+		cfg.DeliveryRecipient = v
+	}
+	if v := os.Getenv("KEYOKU_ADAPTIVE_HEARTBEAT"); v != "" {
+		enabled := v == "true" || v == "1"
+		cfg.AdaptiveHeartbeat = &enabled
 	}
 
 	return cfg, nil
