@@ -285,7 +285,10 @@ func (k *Keyoku) isUserTypicallyActive(ctx context.Context, entityID string) boo
 	for _, count := range dist {
 		total += count
 	}
-	if total < 20 {
+	// Need substantial data before suppressing based on rhythm:
+	// at least 100 messages across at least 5 distinct hours.
+	// Otherwise the pattern is too sparse to be reliable.
+	if total < 100 || len(dist) < 5 {
 		return true // too few messages to determine pattern
 	}
 	loc := pstLocation
