@@ -158,6 +158,7 @@ type Store interface {
 	// Storage metrics
 	GetStorageSizeBytes(ctx context.Context) (int64, error)
 	GetMemoryCount(ctx context.Context) (int, error)
+	GetMemoryCountForEntity(ctx context.Context, entityID string) (int, error)
 
 	// Maintenance
 	Close() error

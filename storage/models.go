@@ -415,9 +415,10 @@ type HeartbeatAction struct {
 	TotalSignals      int       `db:"total_signals"`
 
 	// v2: Intelligence fields
-	UserResponded *bool       `db:"user_responded"` // nil=unchecked, true/false after 2h window
-	TopicEntities StringSlice `db:"topic_entities"` // JSON array of entity IDs from signals
-	StateSnapshot string      `db:"state_snapshot"` // JSON of state metrics at time of decision
+	UserResponded    *bool       `db:"user_responded"`      // nil=unchecked, true/false after 2h window
+	TopicEntities    StringSlice `db:"topic_entities"`      // JSON array of entity IDs from signals
+	StateSnapshot    string      `db:"state_snapshot"`      // JSON of state metrics at time of decision
+	SignalSummaryHash string     `db:"signal_summary_hash"` // SHA256 hash of signal summary text for content-based dedup
 }
 
 // SurfacedMemory tracks when a specific memory was included in a heartbeat message.

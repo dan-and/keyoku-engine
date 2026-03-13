@@ -452,6 +452,9 @@ const heartbeatAnalysisPrompt = `You are an AI agent's memory and planning syste
 ### Escalation Level
 %s
 
+### Memory Velocity
+%s
+
 ### Recent Heartbeat Messages (DO NOT repeat these)
 %s
 
@@ -533,6 +536,12 @@ func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
 				return "1 (first mention — casual)"
 			}
 			return fmt.Sprintf("%d", req.EscalationLevel)
+		}(),
+		func() string {
+			if req.MemoryVelocity <= 0 {
+				return "(no new memories since last check)"
+			}
+			return fmt.Sprintf("%d new memories since last heartbeat action — a lot has happened, reference the new context", req.MemoryVelocity)
 		}(),
 		formatList(req.RecentMessages),
 	)

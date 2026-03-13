@@ -5,6 +5,7 @@ package keyoku
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -449,4 +450,419 @@ func TestHeartbeatSnapshot_FirstContact(t *testing.T) {
 	t.Logf("  ShouldAct: %v", result.ShouldAct)
 	t.Logf("  DecisionReason: %s", result.DecisionReason)
 	t.Logf("  TimePeriod: %s", result.TimePeriod)
+}
+
+// --- Enhancement 1: Memory Velocity ---
+
+func TestMemoryVelocity_HighWhenDeltaGte5(t *testing.T) {
+	// Setup: previous act had 10 memories, now entity has 18 → delta=8 → velocity high
+	prevSnapshot := StateSnapshot{
+		GoalStatuses:         map[string]string{},
+		RelationshipSilences: map[string]int{},
+		MemoryCount:          10,
+		MemoryCountAt:        time.Now().Add(-30 * time.Minute),
+	}
+	prevSnapshotJSON, _ := json.Marshal(prevSnapshot)
+
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{
+					{ID: "plan-1", Content: "Build feature X", Type: storage.TypePlan, Importance: 0.8, State: storage.StateActive},
+				}, nil
+			}
+			return nil, nil
+		},
+		getLastHeartbeatActionFn: func(_ context.Context, _, _, decision string) (*storage.HeartbeatAction, error) {
+			if decision == "act" {
+				return &storage.HeartbeatAction{
+					ActedAt:       time.Now().Add(-30 * time.Minute),
+					Decision:      "act",
+					StateSnapshot: string(prevSnapshotJSON),
+				}, nil
+			}
+			return nil, nil
+		},
+		getMemoryCountForEntityFn: func(_ context.Context, _ string) (int, error) {
+			return 18, nil // 18 - 10 = 8 → high velocity
+		},
+	}
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if result.MemoryVelocity != 8 {
+		t.Errorf("MemoryVelocity = %d, want 8", result.MemoryVelocity)
+	}
+	if !result.MemoryVelocityHigh {
+		t.Error("MemoryVelocityHigh should be true when delta >= 5")
+	}
+	t.Logf("MemoryVelocity=%d, MemoryVelocityHigh=%v", result.MemoryVelocity, result.MemoryVelocityHigh)
+}
+
+func TestMemoryVelocity_LowWhenDeltaLt5(t *testing.T) {
+	prevSnapshot := StateSnapshot{
+		GoalStatuses:         map[string]string{},
+		RelationshipSilences: map[string]int{},
+		MemoryCount:          10,
+		MemoryCountAt:        time.Now().Add(-30 * time.Minute),
+	}
+	prevSnapshotJSON, _ := json.Marshal(prevSnapshot)
+
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+		getLastHeartbeatActionFn: func(_ context.Context, _, _, decision string) (*storage.HeartbeatAction, error) {
+			if decision == "act" {
+				return &storage.HeartbeatAction{
+					ActedAt:       time.Now().Add(-30 * time.Minute),
+					Decision:      "act",
+					StateSnapshot: string(prevSnapshotJSON),
+				}, nil
+			}
+			return nil, nil
+		},
+		getMemoryCountForEntityFn: func(_ context.Context, _ string) (int, error) {
+			return 13, nil // 13 - 10 = 3 → low velocity
+		},
+	}
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if result.MemoryVelocity != 3 {
+		t.Errorf("MemoryVelocity = %d, want 3", result.MemoryVelocity)
+	}
+	if result.MemoryVelocityHigh {
+		t.Error("MemoryVelocityHigh should be false when delta < 5")
+	}
+}
+
+func TestMemoryVelocity_ZeroWhenNoPreviousSnapshot(t *testing.T) {
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+		// No previous act → getLastHeartbeatActionFn returns nil (default)
+		getMemoryCountForEntityFn: func(_ context.Context, _ string) (int, error) {
+			return 20, nil
+		},
+	}
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if result.MemoryVelocity != 0 {
+		t.Errorf("MemoryVelocity = %d, want 0 (no previous snapshot)", result.MemoryVelocity)
+	}
+	if result.MemoryVelocityHigh {
+		t.Error("MemoryVelocityHigh should be false when no previous snapshot")
+	}
+}
+
+// --- Enhancement 2: Signal Freshness Weighting ---
+
+func TestSignalFreshness_BoostsPendingWork(t *testing.T) {
+	result := &HeartbeatResult{
+		PendingWork: []*Memory{
+			{ID: "m-1", Content: "Fresh task", CreatedAt: time.Now().Add(-10 * time.Minute), UpdatedAt: time.Now().Add(-10 * time.Minute)},
+		},
+	}
+	activeSignals := map[HeartbeatCheckType]string{
+		CheckPendingWork: TierNormal,
+	}
+
+	boostSignalFreshness(activeSignals, result)
+
+	if activeSignals[CheckPendingWork] != TierElevated {
+		t.Errorf("PendingWork tier = %q, want %q (fresh memory should boost Normal→Elevated)", activeSignals[CheckPendingWork], TierElevated)
+	}
+}
+
+func TestSignalFreshness_NoBoostWhenStale(t *testing.T) {
+	result := &HeartbeatResult{
+		PendingWork: []*Memory{
+			{ID: "m-1", Content: "Old task", CreatedAt: time.Now().Add(-2 * time.Hour), UpdatedAt: time.Now().Add(-2 * time.Hour)},
+		},
+	}
+	activeSignals := map[HeartbeatCheckType]string{
+		CheckPendingWork: TierNormal,
+	}
+
+	boostSignalFreshness(activeSignals, result)
+
+	if activeSignals[CheckPendingWork] != TierNormal {
+		t.Errorf("PendingWork tier = %q, want %q (stale memory should not boost)", activeSignals[CheckPendingWork], TierNormal)
+	}
+}
+
+func TestSignalFreshness_BoostsDecaying(t *testing.T) {
+	result := &HeartbeatResult{
+		Decaying: []*Memory{
+			{ID: "m-1", Content: "Decaying fresh", CreatedAt: time.Now().Add(-1 * time.Hour), UpdatedAt: time.Now().Add(-5 * time.Minute)},
+		},
+	}
+	activeSignals := map[HeartbeatCheckType]string{
+		CheckDecaying: TierLow,
+	}
+
+	boostSignalFreshness(activeSignals, result)
+
+	if activeSignals[CheckDecaying] != TierNormal {
+		t.Errorf("Decaying tier = %q, want %q (fresh memory should boost Low→Normal)", activeSignals[CheckDecaying], TierNormal)
+	}
+}
+
+func TestSignalFreshness_NeverBootsAboveElevated(t *testing.T) {
+	result := &HeartbeatResult{
+		PendingWork: []*Memory{
+			{ID: "m-1", Content: "Fresh", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		},
+	}
+	activeSignals := map[HeartbeatCheckType]string{
+		CheckPendingWork: TierElevated, // already elevated
+	}
+
+	boostSignalFreshness(activeSignals, result)
+
+	if activeSignals[CheckPendingWork] != TierElevated {
+		t.Errorf("PendingWork tier = %q, want %q (should not boost above elevated)", activeSignals[CheckPendingWork], TierElevated)
+	}
+}
+
+// --- Enhancement 3: Conversation Awareness Gradient ---
+
+func TestConversationGradient_ElevatedOnlyByDefault(t *testing.T) {
+	// During conversation without high velocity, Normal signals should be filtered out
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{
+					{ID: "plan-1", Content: "Some plan", Type: storage.TypePlan, Importance: 0.8, State: storage.StateActive},
+				}, nil
+			}
+			return nil, nil
+		},
+		getMemoryCountForEntityFn: func(_ context.Context, _ string) (int, error) {
+			return 5, nil // low count, no velocity
+		},
+	}
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork),
+		WithInConversation(true))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	// PendingWork is TierNormal → should be filtered during conversation (no velocity)
+	if result.ShouldAct {
+		t.Logf("DecisionReason: %s", result.DecisionReason)
+		// It's OK if first_contact fires, but normal signals should be suppressed
+		if result.DecisionReason != "first_contact" {
+			t.Error("Normal-tier signals should be suppressed during conversation without high velocity")
+		}
+	}
+}
+
+func TestConversationGradient_NormalAllowedWithHighVelocity(t *testing.T) {
+	// During conversation WITH high velocity, Normal signals should pass through
+	prevSnapshot := StateSnapshot{
+		GoalStatuses:         map[string]string{},
+		RelationshipSilences: map[string]int{},
+		MemoryCount:          5,
+		MemoryCountAt:        time.Now().Add(-30 * time.Minute),
+	}
+	prevSnapshotJSON, _ := json.Marshal(prevSnapshot)
+
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{
+					{ID: "plan-1", Content: "Active plan", Type: storage.TypePlan, Importance: 0.8, State: storage.StateActive},
+				}, nil
+			}
+			return nil, nil
+		},
+		getLastHeartbeatActionFn: func(_ context.Context, _, _, decision string) (*storage.HeartbeatAction, error) {
+			if decision == "act" {
+				return &storage.HeartbeatAction{
+					ActedAt:       time.Now().Add(-30 * time.Minute),
+					Decision:      "act",
+					StateSnapshot: string(prevSnapshotJSON),
+				}, nil
+			}
+			return nil, nil
+		},
+		getMemoryCountForEntityFn: func(_ context.Context, _ string) (int, error) {
+			return 15, nil // 15 - 5 = 10 → high velocity
+		},
+	}
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork),
+		WithInConversation(true))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if !result.MemoryVelocityHigh {
+		t.Fatal("Expected MemoryVelocityHigh=true for delta=10")
+	}
+	t.Logf("ShouldAct=%v, DecisionReason=%s, MemoryVelocity=%d", result.ShouldAct, result.DecisionReason, result.MemoryVelocity)
+	// With high velocity, Normal-tier PendingWork should NOT be filtered during conversation
+	// (it may still be suppressed by other checks like cooldown/quiet, but not by conversation filter)
+	if result.DecisionReason == "suppress_conversation_low" {
+		t.Error("Normal-tier signals should NOT be suppressed during conversation with high velocity")
+	}
+}
+
+// --- Enhancement 4: Content-Based Dedup ---
+
+func TestContentDedup_SameHashSuppresses(t *testing.T) {
+	summary := "PENDING WORK (1):\n- [PLAN] Ship v2 release"
+	hash := hashSignalSummary(summary)
+
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+			return []*storage.HeartbeatAction{
+				{
+					ActedAt:           time.Now().Add(-20 * time.Minute),
+					Decision:          "act",
+					SignalSummaryHash: hash,
+					TopicEntities:     []string{}, // no entity overlap
+				},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store}
+
+	// Same hash, no entity overlap → Layer 1 should catch it
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "e1", "a1", []string{"entity-999"}, hash)
+	if !suppressed {
+		t.Error("shouldSuppressTopicRepeat should return true when summary hash matches (Layer 1)")
+	}
+}
+
+func TestContentDedup_DifferentHashDifferentEntities_NoSuppress(t *testing.T) {
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+			return []*storage.HeartbeatAction{
+				{
+					ActedAt:           time.Now().Add(-20 * time.Minute),
+					Decision:          "act",
+					SignalSummaryHash: "oldhash1234567890",
+					TopicEntities:     []string{"entity-A", "entity-B"},
+				},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store}
+
+	// Different hash AND different entities → should NOT suppress
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "e1", "a1", []string{"entity-C", "entity-D"}, "newhash9876543210")
+	if suppressed {
+		t.Error("shouldSuppressTopicRepeat should return false when both hash and entities differ")
+	}
+}
+
+func TestContentDedup_EntityOverlapStillWorks(t *testing.T) {
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+			return []*storage.HeartbeatAction{
+				{
+					ActedAt:           time.Now().Add(-20 * time.Minute),
+					Decision:          "act",
+					SignalSummaryHash: "differenthash12345",                                  // different hash
+					TopicEntities:     []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"}, // same entities
+				},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store}
+
+	// Different hash but 100% entity overlap → Layer 2 should catch it
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "owner", "agent", []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"}, "anotherhash9999999")
+	if !suppressed {
+		t.Error("shouldSuppressTopicRepeat should return true when entity overlap > 85% (Layer 2)")
+	}
+}
+
+// --- Helper function tests ---
+
+func TestHashSignalSummary_Deterministic(t *testing.T) {
+	summary := "PENDING WORK (1):\n- [PLAN] Ship v2 release"
+	h1 := hashSignalSummary(summary)
+	h2 := hashSignalSummary(summary)
+	if h1 != h2 {
+		t.Errorf("hashSignalSummary not deterministic: %q != %q", h1, h2)
+	}
+	if h1 == "" {
+		t.Error("hashSignalSummary should not return empty string for non-empty input")
+	}
+	if len(h1) != 16 {
+		t.Errorf("hashSignalSummary should return 16 hex chars, got %d", len(h1))
+	}
+}
+
+func TestHashSignalSummary_DifferentInputsDifferentHashes(t *testing.T) {
+	h1 := hashSignalSummary("PENDING WORK (1): Ship v2")
+	h2 := hashSignalSummary("PENDING WORK (1): Fix bug")
+	if h1 == h2 {
+		t.Error("Different summaries should produce different hashes")
+	}
+}
+
+func TestHashSignalSummary_EmptyReturnsEmpty(t *testing.T) {
+	if h := hashSignalSummary(""); h != "" {
+		t.Errorf("hashSignalSummary(\"\") = %q, want empty", h)
+	}
+}
+
+func TestHasFreshMemory_ReturnsTrue(t *testing.T) {
+	memories := []*Memory{
+		{ID: "old", CreatedAt: time.Now().Add(-2 * time.Hour), UpdatedAt: time.Now().Add(-2 * time.Hour)},
+		{ID: "fresh", CreatedAt: time.Now().Add(-10 * time.Minute), UpdatedAt: time.Now().Add(-10 * time.Minute)},
+	}
+	if !hasFreshMemory(memories, 30*time.Minute) {
+		t.Error("hasFreshMemory should return true when a memory was created within window")
+	}
+}
+
+func TestHasFreshMemory_ReturnsFalse(t *testing.T) {
+	memories := []*Memory{
+		{ID: "old1", CreatedAt: time.Now().Add(-2 * time.Hour), UpdatedAt: time.Now().Add(-2 * time.Hour)},
+		{ID: "old2", CreatedAt: time.Now().Add(-3 * time.Hour), UpdatedAt: time.Now().Add(-3 * time.Hour)},
+	}
+	if hasFreshMemory(memories, 30*time.Minute) {
+		t.Error("hasFreshMemory should return false when no memory is within window")
+	}
+}
+
+func TestHasFreshMemory_UpdatedAtCounts(t *testing.T) {
+	memories := []*Memory{
+		{ID: "m1", CreatedAt: time.Now().Add(-5 * time.Hour), UpdatedAt: time.Now().Add(-5 * time.Minute)}, // old creation, fresh update
+	}
+	if !hasFreshMemory(memories, 30*time.Minute) {
+		t.Error("hasFreshMemory should return true when UpdatedAt is within window")
+	}
+}
+
+func TestHasFreshMemory_EmptySlice(t *testing.T) {
+	if hasFreshMemory(nil, 30*time.Minute) {
+		t.Error("hasFreshMemory should return false for nil slice")
+	}
+	if hasFreshMemory([]*Memory{}, 30*time.Minute) {
+		t.Error("hasFreshMemory should return false for empty slice")
+	}
 }

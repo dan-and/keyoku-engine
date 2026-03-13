@@ -378,6 +378,7 @@ func (s *SQLiteStore) migrate() error {
 		`ALTER TABLE heartbeat_actions ADD COLUMN user_responded INTEGER DEFAULT NULL`,
 		`ALTER TABLE heartbeat_actions ADD COLUMN topic_entities TEXT DEFAULT '[]'`,
 		`ALTER TABLE heartbeat_actions ADD COLUMN state_snapshot TEXT DEFAULT ''`,
+		`ALTER TABLE heartbeat_actions ADD COLUMN signal_summary_hash TEXT DEFAULT ''`,
 	}
 	for _, stmt := range alterStmts {
 		s.db.Exec(stmt) // ignore "duplicate column" errors
@@ -2769,6 +2770,12 @@ func (s *SQLiteStore) GetMemoryCount(ctx context.Context) (int, error) {
 	return count, err
 }
 
+func (s *SQLiteStore) GetMemoryCountForEntity(ctx context.Context, entityID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM memories WHERE entity_id = ? AND state != 'deleted'", entityID).Scan(&count)
+	return count, err
+}
+
 func (s *SQLiteStore) GetStorageSizeBytes(ctx context.Context) (int64, error) {
 	var pageCount, pageSize int64
 	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
@@ -2817,18 +2824,18 @@ func (s *SQLiteStore) RecordHeartbeatAction(ctx context.Context, action *Heartbe
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO heartbeat_actions (id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO heartbeat_actions (id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot, signal_summary_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		action.ID, action.EntityID, action.AgentID, now, action.TriggerCategory,
 		action.SignalFingerprint, action.Decision, action.UrgencyTier,
 		llmVal, action.SignalSummary, action.TotalSignals,
-		userRespondedVal, topicEntitiesJSON, action.StateSnapshot)
+		userRespondedVal, topicEntitiesJSON, action.StateSnapshot, action.SignalSummaryHash)
 	return err
 }
 
 func (s *SQLiteStore) GetLastHeartbeatAction(ctx context.Context, entityID, agentID, decision string) (*HeartbeatAction, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot, signal_summary_hash
 		FROM heartbeat_actions
 		WHERE entity_id = ? AND agent_id = ? AND decision = ?
 		ORDER BY acted_at DESC LIMIT 1`,
@@ -2845,9 +2852,10 @@ func (s *SQLiteStore) scanHeartbeatAction(row interface{ Scan(...any) error }) (
 	var userRespondedVal *int
 	var topicEntitiesStr *string
 	var stateSnapshotStr *string
+	var summaryHashStr *string
 	err := row.Scan(&a.ID, &a.EntityID, &a.AgentID, &actedStr, &a.TriggerCategory,
 		&a.SignalFingerprint, &a.Decision, &a.UrgencyTier, &llmVal, &a.SignalSummary, &a.TotalSignals,
-		&userRespondedVal, &topicEntitiesStr, &stateSnapshotStr)
+		&userRespondedVal, &topicEntitiesStr, &stateSnapshotStr, &summaryHashStr)
 	if err != nil {
 		return nil, err
 	}
@@ -2865,6 +2873,9 @@ func (s *SQLiteStore) scanHeartbeatAction(row interface{ Scan(...any) error }) (
 	}
 	if stateSnapshotStr != nil {
 		a.StateSnapshot = *stateSnapshotStr
+	}
+	if summaryHashStr != nil {
+		a.SignalSummaryHash = *summaryHashStr
 	}
 	return &a, nil
 }
@@ -2919,7 +2930,7 @@ func (s *SQLiteStore) GetMessageHourDistribution(ctx context.Context, entityID s
 func (s *SQLiteStore) GetHeartbeatActionsForResponseCheck(ctx context.Context, entityID string, minAge time.Duration) ([]*HeartbeatAction, error) {
 	cutoff := time.Now().UTC().Add(-minAge).Format(time.RFC3339)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot, signal_summary_hash
 		FROM heartbeat_actions
 		WHERE entity_id = ? AND decision = 'act' AND user_responded IS NULL AND acted_at < ?
 		ORDER BY acted_at DESC LIMIT 20`,
@@ -2957,7 +2968,7 @@ func (s *SQLiteStore) UpdateHeartbeatActionResponse(ctx context.Context, actionI
 func (s *SQLiteStore) GetRecentActDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error) {
 	cutoff := time.Now().UTC().Add(-since).Format(time.RFC3339)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot, signal_summary_hash
 		FROM heartbeat_actions
 		WHERE entity_id = ? AND agent_id = ? AND decision = 'act' AND acted_at > ?
 		ORDER BY acted_at DESC`,

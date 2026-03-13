@@ -60,6 +60,10 @@ type HeartbeatResult struct {
 	ResponseRate   float64         // 7-day user response rate (0.0-1.0)
 	ConfluenceScore int            // Total signal weight
 
+	// v3: Memory velocity
+	MemoryVelocity     int  // New memories since last act
+	MemoryVelocityHigh bool // True when velocity >= 5 (elevated signal)
+
 	// Team heartbeat fields (populated only in team heartbeat mode)
 	ByAgent map[string]*AgentHeartbeatSummary // per-agent breakdown (team mode only)
 
@@ -72,6 +76,8 @@ type StateSnapshot struct {
 	GoalStatuses         map[string]string `json:"goal_statuses"`          // planID -> status
 	RelationshipSilences map[string]int    `json:"relationship_silences"`  // entityID -> days_silent
 	SentimentDirection   string            `json:"sentiment_direction"`
+	MemoryCount          int               `json:"memory_count"`           // Total active memories at snapshot time
+	MemoryCountAt        time.Time         `json:"memory_count_at"`        // When count was taken
 }
 
 // PositiveDelta represents a detected improvement between heartbeat cycles.
@@ -104,7 +110,8 @@ var signalTierMap = map[HeartbeatCheckType]string{
 	CheckSentiment:    TierLow,
 	CheckRelationship: TierLow,
 	CheckPatterns:        TierLow,
-	CheckPositiveDeltas: TierNormal,
+	CheckPositiveDeltas:  TierNormal,
+	CheckMemoryVelocity: TierElevated,
 }
 
 // tierPriority for comparison (lower = more urgent).
@@ -388,8 +395,9 @@ const (
 	CheckSentiment    HeartbeatCheckType = "sentiment"
 	CheckRelationship HeartbeatCheckType = "relationship"
 	CheckKnowledge    HeartbeatCheckType = "knowledge_gaps"
-	CheckPatterns        HeartbeatCheckType = "patterns"
-	CheckPositiveDeltas  HeartbeatCheckType = "positive_deltas"
+	CheckPatterns         HeartbeatCheckType = "patterns"
+	CheckPositiveDeltas   HeartbeatCheckType = "positive_deltas"
+	CheckMemoryVelocity   HeartbeatCheckType = "memory_velocity"
 )
 
 var allChecks = []HeartbeatCheckType{
@@ -973,7 +981,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		if agentIDForFilter == "" {
 			agentIDForFilter = "default"
 		}
-		surfaceCooldown := 2 * time.Hour // same topic won't resurface for 2h
+		surfaceCooldown := 1 * time.Hour // same memory won't resurface for 1h
 		result.PendingWork = k.filterSurfacedMemoriesStrict(ctx, entityID, agentIDForFilter, result.PendingWork, surfaceCooldown)
 		result.Deadlines = k.filterSurfacedMemories(ctx, entityID, agentIDForFilter, result.Deadlines, surfaceCooldown)
 		result.StaleMonitors = k.filterSurfacedMemoriesStrict(ctx, entityID, agentIDForFilter, result.StaleMonitors, surfaceCooldown)
@@ -985,8 +993,16 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		result.ByAgent = buildByAgentAttribution(result)
 	}
 
+	// Capture memory count for velocity detection
+	memCount, memCountErr := k.store.GetMemoryCountForEntity(ctx, entityID)
+	if memCountErr != nil {
+		memCount = 0
+	}
+
 	// Detect positive deltas before decision (so they can trigger action)
 	snapshot := buildStateSnapshot(result)
+	snapshot.MemoryCount = memCount
+	snapshot.MemoryCountAt = time.Now()
 	agentIDForDelta := cfg.agentID
 	if agentIDForDelta == "" {
 		agentIDForDelta = "default"
@@ -996,6 +1012,14 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		var prevSnapshot StateSnapshot
 		if json.Unmarshal([]byte(lastAct.StateSnapshot), &prevSnapshot) == nil {
 			result.PositiveDeltas = detectDeltas(snapshot, prevSnapshot)
+
+			// Memory velocity: how many new memories since last act
+			if prevSnapshot.MemoryCount > 0 {
+				result.MemoryVelocity = memCount - prevSnapshot.MemoryCount
+				if result.MemoryVelocity >= 5 {
+					result.MemoryVelocityHigh = true
+				}
+			}
 		}
 	}
 
@@ -1126,11 +1150,21 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	// 4. Classify signals
 	activeSignals := k.classifyActiveSignals(result)
 
-	// During active conversation: filter to elevated+ only (no nudges, no low/normal)
+	// 4a. Signal freshness boost — recent memories get a one-step tier upgrade
+	boostSignalFreshness(activeSignals, result)
+
+	// 4b. Conversation awareness gradient
+	// Default: filter to elevated+ only during active conversation.
+	// But if memory velocity is high (lots of new context), lower threshold to Normal
+	// so the agent can chime in about what's happening.
 	if inConversation && len(activeSignals) > 0 {
+		minTier := TierElevated
+		if result.MemoryVelocityHigh {
+			minTier = TierNormal // user is actively generating context, let agent participate
+		}
 		conversationSignals := make(map[HeartbeatCheckType]string)
 		for checkType, tier := range activeSignals {
-			if tier == TierImmediate || tier == TierElevated {
+			if tierPriority[tier] <= tierPriority[minTier] {
 				conversationSignals[checkType] = tier
 			}
 		}
@@ -1250,7 +1284,8 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	// 13. Topic entity dedup
 	topicEntities := k.extractTopicEntities(ctx, result)
 	result.TopicEntities = topicEntities
-	if k.shouldSuppressTopicRepeat(ctx, entityID, agentID, topicEntities) {
+	currentSummaryHash := hashSignalSummary(result.Summary)
+	if k.shouldSuppressTopicRepeat(ctx, entityID, agentID, topicEntities, currentSummaryHash) {
 		result.ShouldAct = false
 		result.DecisionReason = "suppress_topic_repeat"
 		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_topic_repeat", highestTier, totalSignals)
@@ -1286,8 +1321,9 @@ func (k *Keyoku) finalizeAct(ctx context.Context, entityID, agentID string, cfg 
 		result.ResponseRate = k.calculateResponseRate(ctx, entityID, agentID)
 	}
 
-	// Record decision with full metadata
-	k.recordDecisionFull(ctx, entityID, agentID, "signal", fingerprint, "act", tier, totalSignals, result.TopicEntities, string(snapshotJSON))
+	// Record decision with full metadata (include summary hash for content-based dedup)
+	summaryHash := hashSignalSummary(result.Summary)
+	k.recordDecisionFull(ctx, entityID, agentID, "signal", fingerprint, "act", tier, totalSignals, result.TopicEntities, string(snapshotJSON), summaryHash)
 
 	// Record surfaced memory IDs for content rotation
 	if memIDs := collectSignalMemoryIDs(result); len(memIDs) > 0 {
@@ -1667,6 +1703,9 @@ func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatChe
 	if len(result.PositiveDeltas) > 0 {
 		active[CheckPositiveDeltas] = signalTierMap[CheckPositiveDeltas]
 	}
+	if result.MemoryVelocityHigh {
+		active[CheckMemoryVelocity] = signalTierMap[CheckMemoryVelocity]
+	}
 
 	return active
 }
@@ -1717,20 +1756,21 @@ func (k *Keyoku) computeSignalFingerprint(result *HeartbeatResult) string {
 
 // recordDecision persists a heartbeat decision for tracking.
 func (k *Keyoku) recordDecision(ctx context.Context, entityID, agentID, triggerCategory, fingerprint, decision, tier string, totalSignals int) {
-	k.recordDecisionFull(ctx, entityID, agentID, triggerCategory, fingerprint, decision, tier, totalSignals, nil, "")
+	k.recordDecisionFull(ctx, entityID, agentID, triggerCategory, fingerprint, decision, tier, totalSignals, nil, "", "")
 }
 
-func (k *Keyoku) recordDecisionFull(ctx context.Context, entityID, agentID, triggerCategory, fingerprint, decision, tier string, totalSignals int, topicEntities []string, stateSnapshot string) {
+func (k *Keyoku) recordDecisionFull(ctx context.Context, entityID, agentID, triggerCategory, fingerprint, decision, tier string, totalSignals int, topicEntities []string, stateSnapshot string, summaryHash string) {
 	action := &storage.HeartbeatAction{
-		EntityID:          entityID,
-		AgentID:           agentID,
-		TriggerCategory:   triggerCategory,
-		SignalFingerprint: fingerprint,
-		Decision:          decision,
-		UrgencyTier:       tier,
-		TotalSignals:      totalSignals,
-		TopicEntities:     topicEntities,
-		StateSnapshot:     stateSnapshot,
+		EntityID:           entityID,
+		AgentID:            agentID,
+		TriggerCategory:    triggerCategory,
+		SignalFingerprint:  fingerprint,
+		Decision:           decision,
+		UrgencyTier:        tier,
+		TotalSignals:       totalSignals,
+		TopicEntities:      topicEntities,
+		StateSnapshot:      stateSnapshot,
+		SignalSummaryHash:  summaryHash,
 	}
 	_ = k.store.RecordHeartbeatAction(ctx, action)
 }
@@ -1852,15 +1892,26 @@ func (k *Keyoku) extractTopicEntities(ctx context.Context, result *HeartbeatResu
 	return ids
 }
 
-// shouldSuppressTopicRepeat checks if the current signal's entities overlap >60%
-// with entities from recent act decisions (within 6h window).
-func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string) bool {
-	if len(currentEntities) == 0 {
+// shouldSuppressTopicRepeat checks for topic repetition using two layers:
+// Layer 1: Content hash — exact same summary text = suppress (precise, no false positives)
+// Layer 2: Entity overlap 85% within 1h window (fallback for rephrased content about same topic)
+func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string, currentSummaryHash string) bool {
+	recentActs, err := k.store.GetRecentActDecisions(ctx, entityID, agentID, 1*time.Hour)
+	if err != nil || len(recentActs) == 0 {
 		return false
 	}
 
-	recentActs, err := k.store.GetRecentActDecisions(ctx, entityID, agentID, 6*time.Hour)
-	if err != nil || len(recentActs) == 0 {
+	// Layer 1: Content hash match — same summary = same topic, regardless of entities
+	if currentSummaryHash != "" {
+		for _, act := range recentActs {
+			if act.SignalSummaryHash != "" && act.SignalSummaryHash == currentSummaryHash {
+				return true
+			}
+		}
+	}
+
+	// Layer 2: Entity overlap (fallback)
+	if len(currentEntities) == 0 {
 		return false
 	}
 
@@ -1879,7 +1930,8 @@ func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentI
 				overlap++
 			}
 		}
-		if float64(overlap)/float64(len(currentEntities)) > 0.6 {
+		// 85% overlap = basically the same exact topic, not just same project
+		if float64(overlap)/float64(len(currentEntities)) > 0.85 {
 			return true
 		}
 	}
@@ -1905,6 +1957,71 @@ func calculateDeadlineProximity(deadlines []*Memory) float64 {
 		}
 	}
 	return maxScore
+}
+
+// hasFreshMemory returns true if any memory was created or updated within the given window.
+func hasFreshMemory(memories []*Memory, window time.Duration) bool {
+	cutoff := time.Now().Add(-window)
+	for _, m := range memories {
+		if m.CreatedAt.After(cutoff) || m.UpdatedAt.After(cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
+// boostSignalFreshness upgrades signal tiers by one level when fresh memories are present.
+// Only boosts specific signal types where recency meaningfully changes urgency.
+func boostSignalFreshness(activeSignals map[HeartbeatCheckType]string, result *HeartbeatResult) {
+	freshWindow := 30 * time.Minute
+
+	boostOne := func(tier string) string {
+		switch tier {
+		case TierLow:
+			return TierNormal
+		case TierNormal:
+			return TierElevated
+		default:
+			return tier // already elevated or immediate, no boost
+		}
+	}
+
+	// PendingWork, GoalProgress, KnowledgeGaps: Normal → Elevated if fresh
+	if _, ok := activeSignals[CheckPendingWork]; ok && hasFreshMemory(result.PendingWork, freshWindow) {
+		activeSignals[CheckPendingWork] = boostOne(activeSignals[CheckPendingWork])
+	}
+	if _, ok := activeSignals[CheckGoalProgress]; ok {
+		var goalMemories []*Memory
+		for _, g := range result.GoalProgress {
+			goalMemories = append(goalMemories, g.Plan)
+		}
+		if hasFreshMemory(goalMemories, freshWindow) {
+			activeSignals[CheckGoalProgress] = boostOne(activeSignals[CheckGoalProgress])
+		}
+	}
+	if _, ok := activeSignals[CheckKnowledge]; ok {
+		cutoff := time.Now().Add(-freshWindow)
+		for _, g := range result.KnowledgeGaps {
+			if g.AskedAt.After(cutoff) {
+				activeSignals[CheckKnowledge] = boostOne(activeSignals[CheckKnowledge])
+				break
+			}
+		}
+	}
+
+	// Decaying, Sentiment: Low → Normal if fresh
+	if _, ok := activeSignals[CheckDecaying]; ok && hasFreshMemory(result.Decaying, freshWindow) {
+		activeSignals[CheckDecaying] = boostOne(activeSignals[CheckDecaying])
+	}
+}
+
+// hashSignalSummary creates a short hash of the signal summary text for content-based dedup.
+func hashSignalSummary(summary string) string {
+	if summary == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(summary))
+	return hex.EncodeToString(h[:8])
 }
 
 // buildStateSnapshot captures current heartbeat state for delta detection.

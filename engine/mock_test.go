@@ -546,7 +546,8 @@ func (m *mockStore) MarkTopicDropped(_ context.Context, _, _, _ string) error { 
 func (m *mockStore) RecordHeartbeatMessage(_ context.Context, _ *storage.HeartbeatMessage) error { return nil }
 func (m *mockStore) GetRecentHeartbeatMessages(_ context.Context, _, _ string, _ int) ([]*storage.HeartbeatMessage, error) { return nil, nil }
 func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
-func (m *mockStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
+func (m *mockStore) GetMemoryCount(_ context.Context) (int, error)                    { return 0, nil }
+func (m *mockStore) GetMemoryCountForEntity(_ context.Context, _ string) (int, error) { return 0, nil }
 func (m *mockStore) Close() error {
 	if m.closeFn != nil {
 		return m.closeFn()

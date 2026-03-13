@@ -177,6 +177,7 @@ type HeartbeatAnalysisRequest struct {
 	TimePeriod      string   `json:"time_period,omitempty"`      // "morning", "working", "evening", "late_night", "quiet"
 	EscalationLevel int      `json:"escalation_level,omitempty"` // 1=casual, 2=direct, 3=offer help, 4+=dropped
 	RecentMessages  []string `json:"recent_messages,omitempty"`  // Last N heartbeat messages for dedup
+	MemoryVelocity  int      `json:"memory_velocity,omitempty"`  // New memories since last act
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.

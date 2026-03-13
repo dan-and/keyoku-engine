@@ -75,6 +75,9 @@ type testStore struct {
 	deleteCustomExtractionsBySchemaFn func(context.Context, string) error
 	closeFn                          func() error
 	pingFn                           func(context.Context) error
+	getLastHeartbeatActionFn         func(context.Context, string, string, string) (*storage.HeartbeatAction, error)
+	getRecentActDecisionsFn          func(context.Context, string, string, time.Duration) ([]*storage.HeartbeatAction, error)
+	getMemoryCountForEntityFn        func(context.Context, string) (int, error)
 }
 
 func (m *testStore) CreateMemory(ctx context.Context, mem *storage.Memory) error {
@@ -277,13 +280,19 @@ func (m *testStore) GetHNSWIndexSize() int { return 0 }
 func (m *testStore) GetLowestRankedInHNSW(_ context.Context, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *testStore) RemoveFromHNSW(_ string) error { return nil }
 func (m *testStore) RecordHeartbeatAction(_ context.Context, _ *storage.HeartbeatAction) error { return nil }
-func (m *testStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*storage.HeartbeatAction, error) { return nil, nil }
+func (m *testStore) GetLastHeartbeatAction(ctx context.Context, entityID, agentID, decision string) (*storage.HeartbeatAction, error) {
+	if m.getLastHeartbeatActionFn != nil { return m.getLastHeartbeatActionFn(ctx, entityID, agentID, decision) }
+	return nil, nil
+}
 func (m *testStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error) { return 0, nil }
 func (m *testStore) CleanupOldHeartbeatActions(_ context.Context, _ time.Duration) error { return nil }
 func (m *testStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) { return nil, nil }
 func (m *testStore) GetHeartbeatActionsForResponseCheck(_ context.Context, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
 func (m *testStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _ bool) error { return nil }
-func (m *testStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
+func (m *testStore) GetRecentActDecisions(ctx context.Context, entityID, agentID string, d time.Duration) ([]*storage.HeartbeatAction, error) {
+	if m.getRecentActDecisionsFn != nil { return m.getRecentActDecisionsFn(ctx, entityID, agentID, d) }
+	return nil, nil
+}
 func (m *testStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) { return 1.0, 0, nil }
 func (m *testStore) RecordSurfacedMemories(_ context.Context, _, _ string, _ []string) error { return nil }
 func (m *testStore) GetRecentlySurfacedMemoryIDs(_ context.Context, _, _ string, _ time.Duration) ([]string, error) { return nil, nil }
@@ -296,6 +305,10 @@ func (m *testStore) RecordHeartbeatMessage(_ context.Context, _ *storage.Heartbe
 func (m *testStore) GetRecentHeartbeatMessages(_ context.Context, _, _ string, _ int) ([]*storage.HeartbeatMessage, error) { return nil, nil }
 func (m *testStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
 func (m *testStore) GetMemoryCount(_ context.Context) (int, error) { return 100, nil }
+func (m *testStore) GetMemoryCountForEntity(ctx context.Context, entityID string) (int, error) {
+	if m.getMemoryCountForEntityFn != nil { return m.getMemoryCountForEntityFn(ctx, entityID) }
+	return 100, nil
+}
 func (m *testStore) Close() error {
 	if m.closeFn != nil { return m.closeFn() }; return nil
 }

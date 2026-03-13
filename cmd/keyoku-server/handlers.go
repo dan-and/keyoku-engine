@@ -235,6 +235,10 @@ type heartbeatContextResponse struct {
 	PositiveDeltas  []positiveDeltaJSON `json:"positive_deltas,omitempty"`
 	GraphContext    []string           `json:"graph_context,omitempty"`
 	RecentMessages  []string           `json:"recent_messages,omitempty"` // last N heartbeat messages (for dedup)
+
+	// v3: Memory velocity
+	MemoryVelocity     int  `json:"memory_velocity,omitempty"`
+	MemoryVelocityHigh bool `json:"memory_velocity_high,omitempty"`
 }
 
 type watcherStartRequest struct {
@@ -736,6 +740,8 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	resp.ResponseRate = hbResult.ResponseRate
 	resp.ConfluenceScore = hbResult.ConfluenceScore
 	resp.GraphContext = hbResult.GraphContext
+	resp.MemoryVelocity = hbResult.MemoryVelocity
+	resp.MemoryVelocityHigh = hbResult.MemoryVelocityHigh
 
 	// Populate recent heartbeat messages for dedup
 	agentIDForMsgs := req.AgentID
@@ -858,6 +864,7 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				TimePeriod:         hbResult.TimePeriod,
 				EscalationLevel:    hbResult.EscalationLevel,
 				RecentMessages:     resp.RecentMessages,
+				MemoryVelocity:     hbResult.MemoryVelocity,
 			})
 			if err == nil {
 				resp.Analysis = &heartbeatAnalysisJSON{
