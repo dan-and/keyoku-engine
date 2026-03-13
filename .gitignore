@@ -10,7 +10,8 @@
 *.db-shm
 
 # Compiled binaries
-keyoku-server
+/keyoku-server
+/keyoku-server-*
 /cmd/keyoku-server/keyoku-server
 /bin/
 
