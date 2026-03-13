@@ -205,10 +205,7 @@ func mergeContent(existing, newContent string) string {
 	return existing + ". " + newContent
 }
 
-func (d *DuplicateDetector) FindDuplicatesForConsolidation(ctx context.Context, entityID string, threshold float64) ([][]*storage.Memory, error) {
-	if threshold <= 0 {
-		threshold = d.config.NearDuplicateThreshold
-	}
+func (d *DuplicateDetector) FindDuplicatesForConsolidation(ctx context.Context, entityID string, _ float64) ([][]*storage.Memory, error) {
 	query := storage.MemoryQuery{
 		EntityID: entityID,
 		States:   []storage.MemoryState{storage.StateActive, storage.StateStale},

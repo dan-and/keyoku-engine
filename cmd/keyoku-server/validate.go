@@ -77,38 +77,3 @@ func validateOptionalID(id, fieldName string) error {
 	}
 	return nil
 }
-
-// validateQueryParams checks that limit and offset are within valid bounds.
-func validateQueryParams(limit, offset int) error {
-	if limit < 0 || limit > maxLimit {
-		return fmt.Errorf("limit must be between 0 and %d", maxLimit)
-	}
-	if offset < 0 {
-		return fmt.Errorf("offset must be >= 0")
-	}
-	return nil
-}
-
-// validateImportance checks that importance is in [0, 1].
-func validateImportance(v float64) error {
-	if v < 0 || v > 1 {
-		return fmt.Errorf("importance must be between 0 and 1")
-	}
-	return nil
-}
-
-// validateConfidence checks that confidence is in [0, 1].
-func validateConfidence(v float64) error {
-	if v < 0 || v > 1 {
-		return fmt.Errorf("confidence must be between 0 and 1")
-	}
-	return nil
-}
-
-// validateSentiment checks that sentiment is in [-1, 1].
-func validateSentiment(v float64) error {
-	if v < -1 || v > 1 {
-		return fmt.Errorf("sentiment must be between -1 and 1")
-	}
-	return nil
-}
