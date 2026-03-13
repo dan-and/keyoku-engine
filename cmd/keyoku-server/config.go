@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 package main
 
@@ -30,6 +30,21 @@ type ServerConfig struct {
 	QuietHourStart     *int   `json:"quiet_hour_start"`
 	QuietHourEnd       *int   `json:"quiet_hour_end"`
 	QuietHoursTimezone string `json:"quiet_hours_timezone"`
+
+	// Heartbeat delivery
+	DeliveryMethod    string `json:"delivery_method"`     // "cli" or ""
+	DeliveryCommand   string `json:"delivery_command"`    // e.g. "openclaw"
+	DeliveryChannel   string `json:"delivery_channel"`    // e.g. "telegram"
+	DeliveryRecipient string `json:"delivery_recipient"`  // e.g. "-4970078838"
+	DeliverySessionID string `json:"delivery_session_id"` // e.g. "telegram:group:-4970078838"
+	AdaptiveHeartbeat *bool  `json:"adaptive_heartbeat"` // enable dynamic tick interval
+
+	// Auto-start watcher on boot
+	WatcherAutoStart    *bool  `json:"watcher_auto_start"`
+	WatcherEntityIDs    string `json:"watcher_entity_ids"`     // comma-separated
+	WatcherBaseInterval int    `json:"watcher_base_interval"`  // ms
+	WatcherMinInterval  int    `json:"watcher_min_interval"`   // ms
+	WatcherMaxInterval  int    `json:"watcher_max_interval"`   // ms
 }
 
 // DefaultServerConfig returns a server config with sensible defaults.
@@ -110,6 +125,47 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("KEYOKU_QUIET_HOURS_TIMEZONE"); v != "" {
 		cfg.QuietHoursTimezone = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_METHOD"); v != "" {
+		cfg.DeliveryMethod = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_COMMAND"); v != "" {
+		cfg.DeliveryCommand = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_CHANNEL"); v != "" {
+		cfg.DeliveryChannel = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_RECIPIENT"); v != "" {
+		cfg.DeliveryRecipient = v
+	}
+	if v := os.Getenv("KEYOKU_DELIVERY_SESSION_ID"); v != "" {
+		cfg.DeliverySessionID = v
+	}
+	if v := os.Getenv("KEYOKU_ADAPTIVE_HEARTBEAT"); v != "" {
+		enabled := v == "true" || v == "1"
+		cfg.AdaptiveHeartbeat = &enabled
+	}
+	if v := os.Getenv("KEYOKU_WATCHER_AUTO_START"); v != "" {
+		enabled := v == "true" || v == "1"
+		cfg.WatcherAutoStart = &enabled
+	}
+	if v := os.Getenv("KEYOKU_WATCHER_ENTITY_IDS"); v != "" {
+		cfg.WatcherEntityIDs = v
+	}
+	if v := os.Getenv("KEYOKU_WATCHER_BASE_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WatcherBaseInterval = n
+		}
+	}
+	if v := os.Getenv("KEYOKU_WATCHER_MIN_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WatcherMinInterval = n
+		}
+	}
+	if v := os.Getenv("KEYOKU_WATCHER_MAX_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WatcherMaxInterval = n
+		}
 	}
 
 	return cfg, nil

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 // Package cache provides a hot LRU cache for Tier 1 memory retrieval.
 // It stores recently accessed memories with their decoded embeddings
 // for sub-millisecond brute-force cosine search over a small set.

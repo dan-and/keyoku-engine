@@ -61,9 +61,10 @@ func TestWatcher_EmitsHeartbeatSignal(t *testing.T) {
 
 	bus := NewEventBus(false)
 	k := &Keyoku{
-		store:    store,
-		eventBus: bus,
-		logger:   slog.Default(),
+		store:              store,
+		eventBus:           bus,
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking, // pin to working hours so the test is deterministic
 	}
 
 	var signalCount atomic.Int32

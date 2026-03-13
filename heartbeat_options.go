@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2026 Keyoku. All rights reserved.
+
+package keyoku
+
+import (
+	"time"
+
+	"github.com/keyoku-ai/keyoku-engine/llm"
+)
+
+// WithDeadlineWindow sets how far ahead to look for deadlines (default: 24h).
+func WithDeadlineWindow(d time.Duration) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.deadlineWindow = d }
+}
+
+// WithDecayThreshold sets the decay factor below which memories are flagged (default: 0.4).
+func WithDecayThreshold(f float64) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.decayThreshold = f }
+}
+
+// WithImportanceFloor sets the minimum importance for flagging (default: 0.7).
+func WithImportanceFloor(f float64) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.importanceFloor = f }
+}
+
+// WithMaxResults sets the maximum results per check category (default: 20).
+func WithMaxResults(n int) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.maxResults = n }
+}
+
+// WithHeartbeatAgentID scopes the check to a specific agent.
+func WithHeartbeatAgentID(id string) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.agentID = id }
+}
+
+// WithChecks enables only specific checks.
+func WithChecks(checks ...HeartbeatCheckType) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.checks = checks }
+}
+
+// WithTeamHeartbeat enables team-wide heartbeat mode.
+// Queries team-visible and global memories across all agents in the team.
+// Results include ByAgent attribution showing which agent owns each signal.
+func WithTeamHeartbeat(teamID string) HeartbeatOption {
+	return func(c *heartbeatConfig) {
+		c.teamID = teamID
+		c.teamHeartbeat = true
+	}
+}
+
+// WithAutonomy sets the autonomy level for heartbeat evaluation.
+func WithAutonomy(autonomy string) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.autonomy = autonomy }
+}
+
+// WithHeartbeatParams sets optional parameter overrides for heartbeat evaluation.
+func WithHeartbeatParams(params *HeartbeatParams) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.heartbeatParams = params }
+}
+
+// WithLLMPrioritization enables LLM-powered action prioritization on heartbeat results.
+// Only fires when ShouldAct is true. The provider should be the same one used for memory extraction.
+func WithInConversation(inConversation bool) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.inConversation = inConversation }
+}
+
+func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
+	return func(c *heartbeatConfig) {
+		c.llmProvider = provider
+		c.agentContext = agentContext
+		c.entityContext = entityContext
+	}
+}

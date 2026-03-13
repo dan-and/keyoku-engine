@@ -130,7 +130,7 @@ func TestHeartbeatCheck_PendingWork(t *testing.T) {
 		},
 	}
 
-	k := &Keyoku{store: store}
+	k := &Keyoku{store: store, timePeriodOverride: PeriodWorking}
 	result, err := k.HeartbeatCheck(context.Background(), "entity-1", WithChecks(CheckPendingWork))
 	if err != nil {
 		t.Fatalf("HeartbeatCheck error = %v", err)

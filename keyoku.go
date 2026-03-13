@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 // Package keyoku provides an embedded memory engine for AI agents.
 //
@@ -100,7 +100,8 @@ type Keyoku struct {
 	stateManager *engine.StateManager
 	eventBus     *EventBus
 	watcher      *Watcher
-	quietHours   QuietHoursConfig
+	quietHours         QuietHoursConfig
+	timePeriodOverride string // testing only: override currentTimePeriod() return value
 }
 
 // New creates a new Keyoku instance with the given configuration.

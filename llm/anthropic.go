@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1
-// Copyright (c) 2025 Keyoku. All rights reserved.
+// Copyright (c) 2026 Keyoku. All rights reserved.
 
 package llm
 
@@ -38,85 +38,7 @@ func getExtractionToolParam() anthropic.ToolParam {
 		Name:        "extract_memories",
 		Description: anthropic.String("Extract memories from the input text"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"memories": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"content":            map[string]interface{}{"type": "string"},
-							"type":               map[string]interface{}{"type": "string", "enum": []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
-							"importance":         map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-							"confidence":         map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-							"sentiment":          map[string]interface{}{"type": "number", "minimum": -1, "maximum": 1},
-							"importance_factors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-							"confidence_factors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-							"hedging_detected":   map[string]interface{}{"type": "boolean"},
-						},
-						"required": []string{"content", "type", "importance", "confidence", "sentiment"},
-					},
-				},
-				"entities": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"canonical_name": map[string]interface{}{"type": "string"},
-							"type":           map[string]interface{}{"type": "string", "enum": []string{"PERSON", "ORGANIZATION", "LOCATION", "PRODUCT"}},
-							"aliases":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-							"context":        map[string]interface{}{"type": "string"},
-						},
-						"required": []string{"canonical_name", "type"},
-					},
-				},
-				"relationships": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"source":     map[string]interface{}{"type": "string"},
-							"relation":   map[string]interface{}{"type": "string"},
-							"target":     map[string]interface{}{"type": "string"},
-							"confidence": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-						},
-						"required": []string{"source", "relation", "target", "confidence"},
-					},
-				},
-				"updates": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"query":       map[string]interface{}{"type": "string"},
-							"new_content": map[string]interface{}{"type": "string"},
-							"reason":      map[string]interface{}{"type": "string"},
-						},
-						"required": []string{"query", "new_content", "reason"},
-					},
-				},
-				"deletes": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"query":  map[string]interface{}{"type": "string"},
-							"reason": map[string]interface{}{"type": "string"},
-						},
-						"required": []string{"query", "reason"},
-					},
-				},
-				"skipped": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"text":   map[string]interface{}{"type": "string"},
-							"reason": map[string]interface{}{"type": "string"},
-						},
-						"required": []string{"text", "reason"},
-					},
-				},
-			},
+			Properties: ForAnthropicProps(ForAnthropicExtraction()),
 		},
 	}
 }
@@ -169,16 +91,13 @@ func (a *AnthropicProvider) ExtractMemories(ctx context.Context, req ExtractionR
 
 func (a *AnthropicProvider) ConsolidateMemories(ctx context.Context, req ConsolidationRequest) (*ConsolidationResponse, error) {
 	prompt := FormatConsolidationPrompt(req)
+	consolidationSchema := addAnthropicConstraints(cloneSchema(ConsolidationSchema()))
 	toolParam := anthropic.ToolParam{
 		Name:        "consolidate_memories",
 		Description: anthropic.String("Consolidate multiple similar memories into a single coherent memory"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"content":    map[string]interface{}{"type": "string"},
-				"confidence": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-				"reasoning":  map[string]interface{}{"type": "string"},
-			},
-			Required: []string{"content", "confidence", "reasoning"},
+			Properties: consolidationSchema["properties"].(map[string]interface{}),
+			Required:   []string{"content", "confidence", "reasoning"},
 		},
 	}
 
@@ -213,16 +132,13 @@ func (a *AnthropicProvider) ConsolidateMemories(ctx context.Context, req Consoli
 
 func (a *AnthropicProvider) ExtractWithSchema(ctx context.Context, req CustomExtractionRequest) (*CustomExtractionResponse, error) {
 	prompt := FormatCustomExtractionPrompt(req)
+	customSchema := addAnthropicConstraints(CustomExtractionResponseSchema(req.Schema))
 	toolParam := anthropic.ToolParam{
 		Name:        "extract_custom_data",
 		Description: anthropic.String("Extract structured data according to the provided schema"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"extracted_data": req.Schema,
-				"confidence":     map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-				"reasoning":      map[string]interface{}{"type": "string"},
-			},
-			Required: []string{"extracted_data", "confidence", "reasoning"},
+			Properties: customSchema["properties"].(map[string]interface{}),
+			Required:   []string{"extracted_data", "confidence", "reasoning"},
 		},
 	}
 
@@ -257,19 +173,13 @@ func (a *AnthropicProvider) ExtractWithSchema(ctx context.Context, req CustomExt
 
 func (a *AnthropicProvider) ExtractState(ctx context.Context, req StateExtractionRequest) (*StateExtractionResponse, error) {
 	prompt := FormatStateExtractionPrompt(req)
+	stateSchema := addAnthropicConstraints(StateExtractionResponseSchema())
 	toolParam := anthropic.ToolParam{
 		Name:        "extract_state",
 		Description: anthropic.String("Extract workflow state from agent interactions"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"extracted_state":  map[string]interface{}{"type": "object"},
-				"changed_fields":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-				"confidence":       map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-				"reasoning":        map[string]interface{}{"type": "string"},
-				"suggested_action": map[string]interface{}{"type": "string"},
-				"validation_error": map[string]interface{}{"type": "string"},
-			},
-			Required: []string{"extracted_state", "changed_fields", "confidence", "reasoning"},
+			Properties: stateSchema["properties"].(map[string]interface{}),
+			Required:   []string{"extracted_state", "changed_fields", "confidence", "reasoning"},
 		},
 	}
 
@@ -304,18 +214,13 @@ func (a *AnthropicProvider) ExtractState(ctx context.Context, req StateExtractio
 
 func (a *AnthropicProvider) DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error) {
 	prompt := FormatConflictCheckPrompt(req)
+	conflictSchema := addAnthropicConstraints(ConflictCheckSchema())
 	toolParam := anthropic.ToolParam{
 		Name:        "detect_conflict",
 		Description: anthropic.String("Detect whether two memories conflict"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"contradicts":   map[string]interface{}{"type": "boolean"},
-				"conflict_type": map[string]interface{}{"type": "string", "enum": []string{"contradiction", "update", "temporal", "partial", "none"}},
-				"confidence":    map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-				"explanation":   map[string]interface{}{"type": "string"},
-				"resolution":    map[string]interface{}{"type": "string", "enum": []string{"use_new", "keep_existing", "merge", "keep_both"}},
-			},
-			Required: []string{"contradicts", "conflict_type", "confidence", "explanation", "resolution"},
+			Properties: conflictSchema["properties"].(map[string]interface{}),
+			Required:   []string{"contradicts", "conflict_type", "confidence", "explanation", "resolution"},
 		},
 	}
 
@@ -350,16 +255,13 @@ func (a *AnthropicProvider) DetectConflict(ctx context.Context, req ConflictChec
 
 func (a *AnthropicProvider) ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error) {
 	prompt := FormatImportanceReEvalPrompt(req)
+	importanceSchema := addAnthropicConstraints(ImportanceReEvalSchema())
 	toolParam := anthropic.ToolParam{
 		Name:        "reeval_importance",
 		Description: anthropic.String("Re-evaluate the importance of a memory given new information"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"new_importance": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-				"reason":         map[string]interface{}{"type": "string"},
-				"should_update":  map[string]interface{}{"type": "boolean"},
-			},
-			Required: []string{"new_importance", "reason", "should_update"},
+			Properties: importanceSchema["properties"].(map[string]interface{}),
+			Required:   []string{"new_importance", "reason", "should_update"},
 		},
 	}
 
@@ -393,16 +295,16 @@ func (a *AnthropicProvider) ReEvaluateImportance(ctx context.Context, req Import
 }
 
 func (a *AnthropicProvider) PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error) {
+	priorityProps := ForAnthropicProps(ActionPrioritySchema())
+	// Add Anthropic-specific descriptions to help the model
+	priorityProps["priority_action"].(map[string]interface{})["description"] = "The single most important action"
+	priorityProps["action_items"].(map[string]interface{})["description"] = "All items ordered by priority"
+	priorityProps["reasoning"].(map[string]interface{})["description"] = "Brief explanation of priority ordering"
 	toolParam := anthropic.ToolParam{
 		Name:        "prioritize_actions",
 		Description: anthropic.String("Return the prioritized action plan"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"priority_action": map[string]interface{}{"type": "string", "description": "The single most important action"},
-				"action_items":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "All items ordered by priority"},
-				"reasoning":       map[string]interface{}{"type": "string", "description": "Brief explanation of priority ordering"},
-				"urgency":         map[string]interface{}{"type": "string", "enum": []string{"immediate", "soon", "can_wait"}},
-			},
+			Properties: priorityProps,
 		},
 	}
 
@@ -437,19 +339,18 @@ func (a *AnthropicProvider) PrioritizeActions(ctx context.Context, req ActionPri
 }
 
 func (a *AnthropicProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
+	heartbeatProps := ForAnthropicProps(HeartbeatAnalysisSchema())
+	// Add Anthropic-specific descriptions to help the model
+	heartbeatProps["should_act"].(map[string]interface{})["description"] = "Whether the agent should act"
+	heartbeatProps["action_brief"].(map[string]interface{})["description"] = "Summary tailored to autonomy level"
+	heartbeatProps["recommended_actions"].(map[string]interface{})["description"] = "Specific actionable items"
+	heartbeatProps["reasoning"].(map[string]interface{})["description"] = "Why these actions matter now"
+	heartbeatProps["user_facing"].(map[string]interface{})["description"] = "Message to show the user"
 	toolParam := anthropic.ToolParam{
 		Name:        "heartbeat_analysis",
 		Description: anthropic.String("Return the heartbeat context analysis"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"should_act":          map[string]interface{}{"type": "boolean", "description": "Whether the agent should act"},
-				"action_brief":        map[string]interface{}{"type": "string", "description": "Summary tailored to autonomy level"},
-				"recommended_actions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Specific actionable items"},
-				"urgency":             map[string]interface{}{"type": "string", "enum": []string{"none", "low", "medium", "high", "critical"}},
-				"reasoning":           map[string]interface{}{"type": "string", "description": "Why these actions matter now"},
-				"autonomy":            map[string]interface{}{"type": "string", "enum": []string{"observe", "suggest", "act"}},
-				"user_facing":         map[string]interface{}{"type": "string", "description": "Message to show the user"},
-			},
+			Properties: heartbeatProps,
 		},
 	}
 
@@ -484,14 +385,14 @@ func (a *AnthropicProvider) AnalyzeHeartbeatContext(ctx context.Context, req Hea
 }
 
 func (a *AnthropicProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
+	graphProps := ForAnthropicProps(GraphSummarySchema())
+	// Add Anthropic-specific description
+	graphProps["summary"].(map[string]interface{})["description"] = "Natural language summary of connections"
 	toolParam := anthropic.ToolParam{
 		Name:        "summarize_graph",
 		Description: anthropic.String("Summarize the knowledge graph connections"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"summary":    map[string]interface{}{"type": "string", "description": "Natural language summary of connections"},
-				"confidence": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-			},
+			Properties: graphProps,
 		},
 	}
 
@@ -530,19 +431,7 @@ func (a *AnthropicProvider) RerankMemories(ctx context.Context, req RerankReques
 		Name:        "rerank_memories",
 		Description: anthropic.String("Re-rank memory candidates by relevance to the query"),
 		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: map[string]interface{}{
-				"rankings": map[string]interface{}{
-					"type": "array",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"id":    map[string]interface{}{"type": "string"},
-							"score": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
-						},
-						"required": []string{"id", "score"},
-					},
-				},
-			},
+			Properties: ForAnthropicProps(RerankSchema()),
 		},
 	}
 
