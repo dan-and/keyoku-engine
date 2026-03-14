@@ -46,11 +46,8 @@ func TestHandleHeartbeatCheck_Valid(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	// With an empty store, should_act may be true (first_contact) or false
-	// Just verify the response is well-formed
-	if resp.Summary == "" && resp.PendingWork == nil {
-		// This is fine — both are valid for empty store
-	}
+	// With an empty store, should_act may be true (first_contact) or false.
+	// Just verify the response decoded successfully — both empty and populated are valid.
 }
 
 func TestHandleHeartbeatCheck_MissingEntityID(t *testing.T) {
