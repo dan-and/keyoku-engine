@@ -88,7 +88,7 @@
   <!-- Title -->
   <text x="400" y="95" font-family="ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, monospace"
         font-size="46" font-weight="700" fill="white" text-anchor="middle" letter-spacing="-1">
-    keyoku-engine
+    Keyoku Engine
   </text>
 
   <!-- Tagline -->
